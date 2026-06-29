@@ -101,6 +101,11 @@ html:not(.dark) .theme-text :is(.fp, .pg, .act, .filter-pill, .kind-btn, .preset
   color: var(--fg); background: var(--hover);
 }
 html:not(.dark) .theme-text :is(.fp-on, .pg-on, .seg-on, .opt-on) { background: rgb(15 23 42); color: #fff; box-shadow: none; }
+/* ShowcaseView marks the selected filter/kind tab with an `.on` modifier on
+   `.filter-pill`/`.kind-btn` (not the `-on` class above). Without this, the
+   neutral `.filter-pill`/`.kind-btn` rescue paints selected == unselected and
+   the highlight vanishes on a white page. Equal-or-higher specificity, later. */
+html:not(.dark) .theme-text :is(.filter-pill, .kind-btn).on { background: rgb(15 23 42); color: #fff; box-shadow: none; }
 /* Selected COLORED filter pills — their scoped (dark) selected colors get
    overridden by the neutral `.fp` rescue above, so re-state a light-mode
    variant (tinted bg + dark-enough text + colored ring) with equal specificity

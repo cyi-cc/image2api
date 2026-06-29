@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { api } from '../api'
 import { fmtTs, fmtDate, fmtClock } from '../utils/format'
+import { copyText } from '../utils/clipboard'
 import { generatedUrl } from '../api'
 import Icon from '../components/Icon.vue'
 import MediaLightbox from '../components/MediaLightbox.vue'
@@ -16,6 +17,14 @@ const search = ref('')
 const page = ref(1)
 const pageSize = ref(15)
 const total = ref(0)
+const toast = ref('')
+let toastTimer = null
+async function copyPrompt(e) {
+  if (!e.prompt) return
+  toast.value = (await copyText(e.prompt)) ? '指令已复制' : '复制失败'
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => (toast.value = ''), 1800)
+}
 
 async function load() {
   loading.value = true
@@ -281,7 +290,10 @@ const sourcePill = (s) => ({
             <!-- Prompt with error inline; the error reads as a follow-up rather
                  than wasting a whole column when there's nothing to show. -->
             <td class="px-3 py-3.5 align-middle min-w-0">
-              <div class="text-xs text-white/80 truncate" :title="e.prompt">{{ e.prompt || '—' }}</div>
+              <div class="text-xs text-white/80 truncate transition-colors"
+                   :class="e.prompt ? 'cursor-pointer hover:text-white' : ''"
+                   :title="e.prompt ? '点击复制提示词' : ''"
+                   @click="e.prompt && copyPrompt(e)">{{ e.prompt || '—' }}</div>
               <div v-if="e.error" class="mt-1 text-[11px] text-rose-300/85 truncate flex items-center gap-1.5" :title="e.error">
                 <Icon name="close" class="w-3 h-3 shrink-0" />
                 {{ e.error }}
@@ -337,6 +349,11 @@ const sourcePill = (s) => ({
       :meta="[previewing.model, previewing.ratio, previewing.resolution, previewing.duration, fmtMs(previewing.elapsed_ms)].filter(Boolean).join(' · ')"
       :download-name="previewing.file"
       @close="closePreview" />
+
+    <div v-if="toast"
+         class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-slate-900 text-white text-xs px-4 py-2 rounded-lg shadow-lg">
+      {{ toast }}
+    </div>
   </section>
 </template>
 

@@ -174,8 +174,8 @@ onMounted(refresh)
     </div>
 
     <!-- grid -->
-    <div v-if="loading" class="text-center text-xs text-white/40 py-12">加载中…</div>
-    <div v-else-if="!filtered.length" class="text-center text-xs text-white/40 py-12">没有条目</div>
+    <div v-if="loading" class="text-center text-xs text-[color:var(--fg-faint)] py-12">加载中…</div>
+    <div v-else-if="!filtered.length" class="text-center text-xs text-[color:var(--fg-faint)] py-12">没有条目</div>
     <div v-else class="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
       <div v-for="rec in pagedItems" :key="rec.id"
            class="media-card relative rounded-2xl overflow-hidden ring-1 ring-white/10 aspect-[4/3] group bg-white/[0.04]"
@@ -211,13 +211,13 @@ onMounted(refresh)
     <!-- pagination — shown when there's more than one page worth of entries -->
     <div v-if="!loading && totalPages > 1"
          class="card !p-3 flex items-center justify-between gap-3">
-      <div class="text-xs text-white/55 tabular-nums px-2">
-        <span class="text-white/85">{{ (page - 1) * pageSize + 1 }}–{{ Math.min(filtered.length, page * pageSize) }}</span>
+      <div class="text-xs text-[color:var(--fg-3)] tabular-nums px-2">
+        <span class="text-[color:var(--fg)]">{{ (page - 1) * pageSize + 1 }}–{{ Math.min(filtered.length, page * pageSize) }}</span>
         / {{ filtered.length }} 条
       </div>
       <div class="flex items-center gap-1">
         <template v-for="(n, i) in pageNumbers" :key="i">
-          <span v-if="n === null" class="px-1 text-white/35">…</span>
+          <span v-if="n === null" class="px-1 text-[color:var(--fg-faint)]">…</span>
           <button v-else @click="goPage(n)" class="pg" :class="page === n && 'pg-on'">{{ n }}</button>
         </template>
       </div>
@@ -226,20 +226,20 @@ onMounted(refresh)
     <!-- ======= form modal ======= -->
     <transition name="fade">
       <div v-if="editing"
-           class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm grid place-items-center p-4"
+           class="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-start justify-center overflow-y-auto p-4"
            @click.self="closeForm">
-        <div class="card w-full max-w-2xl !shadow-2xl">
-          <div class="px-5 py-3 border-b border-white/[0.06] flex items-center justify-between">
+        <div class="card w-full max-w-2xl !shadow-2xl my-auto">
+          <div class="px-5 py-3 border-b border-[color:var(--hairline)] flex items-center justify-between">
             <h2 class="text-sm font-semibold">
               {{ form.id ? '编辑' : '新增' }} ·
               {{ form.kind === 'hero' ? 'Hero 卡片' : form.kind === 'bento' ? 'Bento 灵感' : '作品' }}
             </h2>
-            <button @click="closeForm" class="text-white/40 hover:text-white">
+            <button @click="closeForm" class="text-[color:var(--fg-faint)] hover:text-[color:var(--fg)]">
               <Icon name="close" class="w-4 h-4" />
             </button>
           </div>
 
-          <div class="p-5 space-y-4 max-h-[70vh] overflow-y-auto">
+          <div class="p-5 space-y-4">
             <!-- live preview -->
             <div class="relative rounded-2xl overflow-hidden ring-1 ring-white/10 aspect-[5/2] bg-white/[0.04]"
                  :style="bgFor(form.image)">
@@ -256,7 +256,7 @@ onMounted(refresh)
 
             <div class="grid sm:grid-cols-2 gap-3">
               <div>
-                <label class="block text-xs text-white/55 mb-1.5">类型</label>
+                <label class="block text-xs text-[color:var(--fg-3)] mb-1.5">类型</label>
                 <div class="flex gap-1.5">
                   <button type="button" @click="form.kind = 'hero'" class="kind-btn" :class="form.kind === 'hero' && 'on'">Hero</button>
                   <button type="button" @click="form.kind = 'bento'" class="kind-btn" :class="form.kind === 'bento' && 'on'">Bento</button>
@@ -264,62 +264,62 @@ onMounted(refresh)
                 </div>
               </div>
               <div>
-                <label class="block text-xs text-white/55 mb-1.5">权重 <span class="text-white/35">(越大越靠前)</span></label>
+                <label class="block text-xs text-[color:var(--fg-3)] mb-1.5">权重 <span class="text-[color:var(--fg-faint)]">(越大越靠前)</span></label>
                 <input v-model.number="form.weight" type="number" class="field" />
               </div>
             </div>
 
             <!-- image picker (the central change — admins pick a real image) -->
             <div>
-              <label class="block text-xs text-white/55 mb-1.5">底图</label>
+              <label class="block text-xs text-[color:var(--fg-3)] mb-1.5">底图</label>
               <div class="flex gap-2">
                 <input v-model="form.image" class="field font-mono text-[11px]"
                        placeholder="user/abc.png 或 https://…" />
                 <button type="button" @click="openPicker" class="btn-soft shrink-0">选择已生成</button>
               </div>
-              <p class="text-[11px] text-white/35 mt-1">填写 /generated 下的相对路径,或粘贴一个外链 URL。</p>
+              <p class="text-[11px] text-[color:var(--fg-faint)] mt-1">填写 /generated 下的相对路径,或粘贴一个外链 URL。</p>
             </div>
 
             <template v-if="form.kind !== 'work'">
               <div class="grid sm:grid-cols-2 gap-3">
                 <div>
-                  <label class="block text-xs text-white/55 mb-1.5">标题</label>
+                  <label class="block text-xs text-[color:var(--fg-3)] mb-1.5">标题</label>
                   <input v-model="form.title" class="field" placeholder="电影感人物" />
                 </div>
                 <div>
-                  <label class="block text-xs text-white/55 mb-1.5">副标题</label>
+                  <label class="block text-xs text-[color:var(--fg-3)] mb-1.5">副标题</label>
                   <input v-model="form.subtitle" class="field" placeholder="CINEMATIC PORTRAIT" />
                 </div>
               </div>
               <div>
-                <label class="block text-xs text-white/55 mb-1.5">提示词 <span class="text-white/35">(点 Bento 后会预填到画图)</span></label>
+                <label class="block text-xs text-[color:var(--fg-3)] mb-1.5">提示词 <span class="text-[color:var(--fg-faint)]">(点 Bento 后会预填到画图)</span></label>
                 <textarea v-model="form.prompt" rows="3" class="field resize-none"
                           placeholder="一位身穿米色风衣的女子站在雨夜的霓虹街道,胶片质感,浅景深,电影感"></textarea>
               </div>
             </template>
             <template v-else>
               <div>
-                <label class="block text-xs text-white/55 mb-1.5">作品标题 <span class="text-white/35">(可选)</span></label>
+                <label class="block text-xs text-[color:var(--fg-3)] mb-1.5">作品标题 <span class="text-[color:var(--fg-faint)]">(可选)</span></label>
                 <input v-model="form.title" class="field" placeholder="留空则只展示图片" />
               </div>
             </template>
 
             <div v-if="form.kind === 'bento'">
-              <label class="block text-xs text-white/55 mb-1.5">网格跨度 <span class="text-white/35">(Tailwind class)</span></label>
+              <label class="block text-xs text-[color:var(--fg-3)] mb-1.5">网格跨度 <span class="text-[color:var(--fg-faint)]">(Tailwind class)</span></label>
               <div class="flex gap-1.5 flex-wrap mb-2">
                 <button v-for="s in SPAN_PRESETS" :key="s" type="button" @click="form.span = s"
-                        class="px-2.5 py-1 text-[11px] rounded-lg ring-1 ring-white/10 hover:bg-white/[0.08]"
-                        :class="form.span === s ? 'bg-white text-slate-900' : 'bg-white/[0.04] text-white/70'">
+                        class="px-2.5 py-1 text-[11px] rounded-lg ring-1 ring-[color:var(--hairline)] hover:bg-[color:var(--hover)]"
+                        :class="form.span === s ? 'bg-[color:var(--btn-solid-bg)] text-[color:var(--btn-solid-fg)]' : 'bg-[color:var(--surface-2)] text-[color:var(--fg-2)]'">
                   {{ s || '默认 1×1' }}
                 </button>
               </div>
               <input v-model="form.span" class="field font-mono text-[11px]" placeholder="md:col-span-2" />
             </div>
 
-            <p v-if="error" class="text-xs text-rose-300">{{ error }}</p>
+            <p v-if="error" class="text-xs text-rose-500">{{ error }}</p>
           </div>
 
-          <div class="px-5 py-3 border-t border-white/[0.06] flex items-center justify-end gap-2">
+          <div class="px-5 py-3 border-t border-[color:var(--hairline)] flex items-center justify-end gap-2">
             <button @click="closeForm" class="btn-ghost">取消</button>
             <button @click="save" :disabled="saving" class="btn-primary">
               {{ saving ? '保存中…' : '保存' }}
@@ -335,14 +335,14 @@ onMounted(refresh)
            class="fixed inset-0 z-[60] bg-black/80 backdrop-blur-sm grid place-items-center p-4"
            @click.self="closePicker">
         <div class="card w-full max-w-4xl !shadow-2xl">
-          <div class="px-5 py-3 border-b border-white/[0.06] flex items-center justify-between">
+          <div class="px-5 py-3 border-b border-[color:var(--hairline)] flex items-center justify-between">
             <h2 class="text-sm font-semibold">选择底图 · 最近生成</h2>
-            <button @click="closePicker" class="text-white/40 hover:text-white">
+            <button @click="closePicker" class="text-[color:var(--fg-faint)] hover:text-[color:var(--fg)]">
               <Icon name="close" class="w-4 h-4" />
             </button>
           </div>
           <div class="p-4 max-h-[70vh] overflow-y-auto">
-            <div v-if="!recentFiles.length" class="text-center text-xs text-white/40 py-10">尚未有生成过的图片</div>
+            <div v-if="!recentFiles.length" class="text-center text-xs text-[color:var(--fg-faint)] py-10">尚未有生成过的图片</div>
             <div v-else class="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-6 gap-2">
               <button v-for="f in recentFiles" :key="f.name" type="button" @click="pickImage(f)"
                       class="relative aspect-square rounded-lg overflow-hidden ring-1 ring-white/10 hover:ring-fuchsia-400/60 transition-all">
@@ -357,41 +357,35 @@ onMounted(refresh)
 </template>
 
 <style scoped>
+/* All colors come from the theme vars (:root light / html.dark dark) so the view
+   adapts to BOTH themes. Selected states use --btn-solid-* which inverts per
+   theme (light: dark bg/white text · dark: white bg/dark text). */
 .filter-pill {
   padding: 0.375rem 0.75rem;
   font-size: 0.75rem;
   border-radius: 0.5rem;
-  background: rgb(255 255 255 / 0.06);
-  color: rgb(255 255 255 / 0.65);
+  background: var(--surface-2);
+  color: var(--fg-2);
   transition: background 0.15s, color 0.15s;
 }
-.filter-pill:hover { background: rgb(255 255 255 / 0.1); color: white; }
-.filter-pill.on { background: white; color: rgb(15 23 42); }
+.filter-pill:hover { background: var(--hover); color: var(--fg); }
+.filter-pill.on { background: var(--btn-solid-bg); color: var(--btn-solid-fg); }
 
 .kind-btn {
   flex: 1;
   padding: 0.5rem 0;
   border-radius: 0.5rem;
   font-size: 0.75rem;
-  background: rgb(255 255 255 / 0.06);
-  color: rgb(255 255 255 / 0.7);
+  background: var(--surface-2);
+  color: var(--fg-2);
   transition: background 0.15s, color 0.15s;
 }
-.kind-btn:hover { background: rgb(255 255 255 / 0.1); }
-.kind-btn.on { background: white; color: rgb(15 23 42); }
+.kind-btn:hover { background: var(--hover); }
+.kind-btn.on { background: var(--btn-solid-bg); color: var(--btn-solid-fg); }
 
-.field {
-  width: 100%;
-  padding: 0.5rem 0.7rem;
-  border-radius: 0.6rem;
-  font-size: 0.85rem;
-  outline: none;
-  background: rgb(255 255 255 / 0.04);
-  border: 1px solid rgb(255 255 255 / 0.1);
-  color: white;
-  transition: border-color 0.18s, background 0.18s;
-}
-.field:focus { border-color: rgb(167 139 250 / 0.65); background: rgb(255 255 255 / 0.06); }
+/* No scoped .field — use the GLOBAL .field (bg-white + border-slate-200 in light,
+   .public-dark .field in dark) so inputs match every other modal and the border
+   is clearly visible. A scoped override here only re-broke the border. */
 .fade-enter-active, .fade-leave-active { transition: opacity 0.15s ease; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
 
@@ -403,15 +397,15 @@ onMounted(refresh)
   font-weight: 500;
   text-align: center;
   border-radius: 0.45rem;
-  color: rgb(255 255 255 / 0.7);
-  background: rgb(255 255 255 / 0.04);
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.08);
+  color: var(--fg-2);
+  background: var(--surface-2);
+  box-shadow: inset 0 0 0 1px var(--hairline);
   transition: background 0.15s, color 0.15s;
 }
-.pg:hover:not(.pg-on) { background: rgb(255 255 255 / 0.1); color: white; }
+.pg:hover:not(.pg-on) { background: var(--hover); color: var(--fg); }
 .pg-on {
-  background: rgb(255 255 255 / 0.92);
-  color: rgb(15 23 42);
+  background: var(--btn-solid-bg);
+  color: var(--btn-solid-fg);
   box-shadow: none;
 }
 </style>

@@ -182,7 +182,7 @@ const pageNumbers = computed(() => {
           <span class="text-xs font-medium text-white/75">刚生成 {{ lastBatch.length }} 个 — 请复制保存</span>
           <button @click="copyBatch" class="text-xs btn-soft"><Icon name="copy" class="w-3.5 h-3.5" /> 全部复制</button>
         </div>
-        <div class="font-mono text-xs text-white/85 space-y-0.5 max-h-40 overflow-auto">
+        <div class="font-mono text-xs text-white/85 space-y-0.5">
           <div v-for="code in lastBatch" :key="code">{{ code }}</div>
         </div>
       </div>

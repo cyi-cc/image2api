@@ -1,13 +1,13 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { api, jsonBody } from '../api'
+import { api, jsonBody, generatedUrl } from '../api'
 import { auth, refreshMe } from '../auth'
-import { draft, applyJobToDraft } from '../playground'
+import { draft } from '../playground'
 import Icon from '../components/Icon.vue'
 import SelectMenu from '../components/SelectMenu.vue'
 import MediaLightbox from '../components/MediaLightbox.vue'
-import { points, pointsLabel } from '../credits'
+import { pointsLabel } from '../credits'
 import { sortResolutions } from '../utils/format'
 
 const route = useRoute()
@@ -38,28 +38,27 @@ watch(duration,   (v) => { draft.duration = v })
 const refImages = ref([])      // [{ name, dataUrl }]
 const fileInput = ref(null)
 
-const busy = ref(false)
-// submitting = run() owns the busy/current state end-to-end while a /generate
-// call is in flight. The 2s poll() must NOT touch busy or current during this
-// window, or it races run() and the controls flicker unlocked mid-generation.
-const submitting = ref(false)
-// Gateway-timeout statuses our BACKEND never emits — they mean a CDN/proxy
-// (e.g. EdgeOne 524) gave up waiting while the synchronous /generate is STILL
-// rendering server-side. Treat these as "still running", NOT a failure: keep the
-// controls locked and let poll() follow the live job to completion (出图).
+// Concurrent generation: each 生成 click fires an INDEPENDENT /generate and adds
+// a card — the UI never locks, so several can run at once. `tasks` holds the
+// in-session cards (newest first); `history` fills the grid up to 10 with the
+// user's recent finished results from the server.
+const tasks = ref([])
+const history = ref([])
+// Gateway-timeout statuses our BACKEND never emits — a CDN/proxy (e.g. EdgeOne
+// 524) gave up waiting while the synchronous /generate is STILL rendering. The
+// task stays "running" and loadHistory() claims it once the result lands.
 const GATEWAY_TIMEOUT = new Set([0, 408, 504, 520, 521, 522, 523, 524, 525])
 const error = ref('')
-const statusText = ref('')
-
-// Only ever show the latest generation on the right side. Each new run
-// replaces it; the persistent history lives at /logs (UserLogsView).
-// `current` is restored from the server on mount and refreshed via /jobs/mine
-// polling, so a reload, a parallel tab, or a different browser sees the same
-// in-flight job and the same final result without re-running anything.
-const current = ref(null)
 const lightbox = ref(null)
 const toast = ref('')
 let pollTimer = null
+
+const fileKey = (u) => (u || '').split('?')[0].split('/').pop()
+const taskKey = (x) => [x.model, x.kind, (x.prompt || '').trim()].join('|')
+// Up to 10 cards (一行五个 × 2): in-session tasks first, then the server's recent
+// rows (进行中 + 成功) so the grid stays filled; loadHistory() prunes an optimistic
+// task once the server tracks it → never a duplicate. 新的顶掉老的.
+const displayItems = computed(() => [...tasks.value, ...history.value].slice(0, 10))
 
 // ---- derived ----
 const models = computed(() =>
@@ -183,7 +182,13 @@ function openPicker() { fileInput.value && fileInput.value.click() }
 // of charging + failing upstream after the upload.
 const MAX_REF_BYTES = 8 * 1024 * 1024
 function onFiles(ev) {
-  const files = Array.from(ev.target.files || [])
+  addFiles(Array.from(ev.target.files || []))
+  if (ev.target) ev.target.value = ''
+}
+// Shared by the file picker AND drag-and-drop. Filters to images, honors the
+// per-model max + 8MB cap, reads each to a data URL.
+function addFiles(files) {
+  files = files.filter((f) => f && f.type && f.type.startsWith('image/'))
   const room = Math.max(0, maxRefs.value - refImages.value.length)
   const tooBig = []
   let added = 0
@@ -198,7 +203,23 @@ function onFiles(ev) {
   error.value = tooBig.length
     ? `图片超过 8MB 已跳过：${tooBig.join('、')}（请压缩后再传）`
     : ''
-  if (ev.target) ev.target.value = ''
+}
+// Drag-and-drop onto the reference area.
+const dragOver = ref(false)
+function onDrop(ev) {
+  ev.preventDefault()
+  dragOver.value = false
+  if (maxRefs.value <= 0) return
+  addFiles(Array.from(ev.dataTransfer?.files || []))
+}
+function onDragOver(ev) {
+  ev.preventDefault()
+  if (maxRefs.value > 0) dragOver.value = true
+}
+function onDragLeave(ev) {
+  // ignore leave events bubbling from children
+  if (ev.currentTarget.contains(ev.relatedTarget)) return
+  dragOver.value = false
 }
 function removeRef(i) { refImages.value.splice(i, 1) }
 
@@ -241,17 +262,11 @@ function flash(msg) {
   toastTimer = setTimeout(() => (toast.value = ''), 1800)
 }
 
-async function copyLink(url) {
-  try {
-    const abs = url.startsWith('http') ? url : location.origin + url
-    await navigator.clipboard.writeText(abs)
-    flash('链接已复制')
-  } catch {
-    flash('复制失败')
-  }
-}
+// ---- generate (concurrent — no lock) ----
+// 生图 can request 1–4 images at once: each is an independent task/charge.
+const count = ref(1)
+const batchCount = computed(() => (mode.value === 'image' ? Math.max(1, Math.min(4, count.value)) : 1))
 
-// ---- generate ----
 async function run() {
   if (!modelId.value) { error.value = '请选择模型'; return }
   if (!prompt.value.trim()) { error.value = '请输入提示词'; return }
@@ -263,11 +278,22 @@ async function run() {
     error.value = '该参数组合未定价 (留空 = 不支持)'
     return
   }
-  if (!canAfford.value) {
-    error.value = `积分不足 — 需要 ${pointsLabel(price.value)},余额 ${pointsLabel(credits.value)}`
+  const n = batchCount.value
+  if (price.value != null && credits.value < price.value * n) {
+    error.value = `积分不足 — 需要 ${pointsLabel(price.value * n)},余额 ${pointsLabel(credits.value)}`
     return
   }
-  const job = {
+  error.value = ''
+  // A new generation clears any lingering real-time error cards.
+  tasks.value = tasks.value.filter((t) => t.status !== 'failed')
+  // Fire N independent tasks (no await between them → all run concurrently).
+  for (let i = 0; i < n; i++) fireOne()
+}
+
+async function fireOne() {
+  // Snapshot the form NOW — concurrent tasks keep their own params even if the
+  // user edits the form (or fires another batch) while this one runs.
+  const task = {
     id: Math.random().toString(36).slice(2, 10),
     model: modelId.value,
     kind: mode.value,
@@ -275,7 +301,6 @@ async function run() {
     ratio: ratio.value,
     resolution: resolution.value,
     duration: mode.value === 'video' ? duration.value : '',
-    refs: refImages.value.length,
     status: 'pending',
     url: '',
     error: '',
@@ -283,118 +308,144 @@ async function run() {
     charged: price.value,
     ts: Date.now(),
   }
-  current.value = job
+  const refsSnapshot = refImages.value.slice()
+  const chargedPrice = price.value
+  tasks.value.unshift(task)
+  if (tasks.value.length > 10) tasks.value = tasks.value.slice(0, 10)
 
-  busy.value = true
-  submitting.value = true
-  error.value = ''
-  statusText.value = mode.value === 'video' ? '生成视频中 (约 1–3 分钟)…' : '生成中…'
+  // Optimistically deduct the price (server debits before generating; a failure
+  // refunds + refreshMe reconciles).
+  if (auth.user && chargedPrice != null) {
+    auth.user.credits = Math.max(0, Number(auth.user.credits || 0) - chargedPrice)
+  }
+
+  const payload = {
+    model: task.model, prompt: task.prompt, ratio: task.ratio, resolution: task.resolution,
+  }
+  if (task.kind === 'video') payload.duration = task.duration
+  if (refsSnapshot.length) {
+    const refs = await Promise.all(refsSnapshot.map(refToBase64))
+    payload.reference_images = refs.filter(Boolean)
+  }
 
   try {
-    // Optimistically deduct the price from the displayed balance right away. The
-    // server debits BEFORE generating (which can take minutes for video), so
-    // otherwise 余额 looks unchanged the whole time. The success response carries
-    // the authoritative balance (reconciled below); a failure refunds + refreshMe.
-    if (auth.user && price.value != null) {
-      auth.user.credits = Math.max(0, Number(auth.user.credits || 0) - price.value)
-    }
-
-    const payload = {
-      model: modelId.value,
-      prompt: prompt.value,
-      ratio: ratio.value,
-      resolution: resolution.value,
-    }
-    if (mode.value === 'video') payload.duration = duration.value
-    if (refImages.value.length) {
-      // Backend accepts raw base64 only — convert each ref (uploaded dataUrl or
-      // restored /images URL) to base64 at submit time.
-      const refs = await Promise.all(refImages.value.map(refToBase64))
-      payload.reference_images = refs.filter(Boolean)
-    }
-
-    // Single charged call: the server debits the price atomically BEFORE
-    // generating and refunds on failure, so the client can't skip the charge.
     const r = await api('/generate', jsonBody('POST', payload))
-
     if (r.ok && r.data?.url) {
-      job.status = 'done'
-      job.url = r.data.url
-      job.elapsed_ms = r.data.elapsed_ms
-      job.charged = r.data.charged ?? price.value
+      task.status = 'done'
+      task.url = r.data.url
+      task.elapsed_ms = r.data.elapsed_ms
+      task.charged = r.data.charged ?? chargedPrice
       if (auth.user && r.data.credits != null) auth.user.credits = r.data.credits
-      statusText.value = `完成 · 扣费 ${pointsLabel(job.charged)} · ${(r.data.elapsed_ms / 1000).toFixed(1)}s · 余额 ${pointsLabel(credits.value)}`
-      busy.value = false                       // 出图 → 解锁
     } else if (GATEWAY_TIMEOUT.has(r.status)) {
-      // CDN/代理回源超时(如 EdgeOne 524)—— 后端仍在生成。不当失败、不解锁:
-      // 保持 busy=true,交给下面的 poll() + 2s 轮询跟到出图("不出图就不闪")。
-      statusText.value = mode.value === 'video' ? '生成视频中 (约 1–3 分钟)…' : '生成中…'
+      // CDN/代理回源超时(如 EdgeOne 524)—— 后端仍在生成。保持 running,
+      // loadHistory() 在结果落库后认领它。
+      task.status = 'running'
     } else {
-      // 真失败:服务端已退款,resync 余额并解锁。
       await refreshMe()
-      job.status = 'failed'
-      job.error = r.data?.detail || `失败 (${r.status})`
-      statusText.value = ''
-      busy.value = false                       // 真失败 → 解锁
+      task.status = 'failed'
+      task.error = r.data?.detail || `失败 (${r.status})`
     }
-  } finally {
-    // Hand control back to poll(); busy is left as set above (locked when the
-    // job is still rendering after a gateway timeout).
-    submitting.value = false
+  } catch (e) {
+    await refreshMe()
+    task.status = 'failed'
+    task.error = String(e)
   }
-  // Sync real server state: poll() picks up the live pending job (replacing our
-  // optimistic one with the real id) and will unlock + show the result the
-  // moment it finishes — so a 524 mid-flight never leaves the UI unlocked.
-  poll()
+  loadHistory()
 }
 
-// Recover the current generation from the server: any pending job for this
-// user lives in event_log, so reload / parallel tab / parallel browser can
-// all see the same in-flight state and the same final result.
-async function poll() {
-  // While run() is mid-submit it fully owns busy/current — don't race it.
-  if (submitting.value) return
-  const r = await api('/jobs/mine')
+// Fill the grid up to 10 with the user's recent rows (进行中 + 成功). Past
+// FAILURES are never shown from history — an error is only relevant for the live
+// generation the user just ran. Prune optimistic tasks the server now tracks.
+let prevPending = 0
+async function loadHistory() {
+  // Server-side filter: status IN (pending, success), newest 12 — exactly the
+  // rows the grid shows, in one query (no client over-fetch).
+  const r = await api('/logs?limit=10&statuses=pending,success')
   if (!r.ok) return
-  const { pending, latest } = r.data || {}
-  if (pending) {
-    busy.value = true
-    if (!statusText.value) {
-      statusText.value = pending.kind === 'video' ? '生成视频中 (约 1–3 分钟)…' : '生成中…'
-    }
-    if (!current.value || current.value.id !== pending.id) {
-      current.value = { ...pending }
-      // Replay the pending job's params onto the form so a fresh tab shows
-      // what's cooking — and writes them into the cross-component draft.
-      applyJobToDraft(pending)
-      mode.value = pending.kind === 'video' ? 'video' : 'image'
-      modelId.value = pending.model || modelId.value
-      prompt.value = pending.prompt || prompt.value
-      ratio.value = pending.ratio || ratio.value
-      resolution.value = pending.resolution || resolution.value
-      duration.value = pending.duration || duration.value
-      // Re-display the uploaded reference image(s) after a reload. They're
-      // served (cookie-authed) from /images; re-fetch into data URLs so the
-      // thumbnails show AND the refs stay re-submittable if the user regenerates.
-      restoreRefs(pending.reference_urls)
-    }
-    return
+  history.value = (r.data?.data || [])
+    .filter((e) => e.status === 'pending' || e.file)
+    .map((e) => ({
+      id: 'srv-' + e.id,
+      prompt: e.prompt, model: e.model, kind: e.kind,
+      ratio: e.ratio, resolution: e.resolution, duration: e.duration,
+      status: e.status === 'success' ? 'done' : 'running',
+      url: e.file ? generatedUrl(e.file) : '',
+      error: '',
+      elapsed_ms: e.elapsed_ms,
+    }))
+  // Hand each optimistic task over to the server once it's tracked there: drop a
+  // pending task when a matching server pending row exists, a done task once its
+  // file is in the server's rows. A FAILED task is a live error — keep it.
+  const serverPending = new Set(history.value.filter((h) => h.status === 'running').map(taskKey))
+  const serverFiles = new Set(history.value.filter((h) => h.url).map((h) => fileKey(h.url)))
+  tasks.value = tasks.value.filter((t) => {
+    if (t.status === 'failed') return true
+    if (t.status === 'done') return !serverFiles.has(fileKey(t.url))
+    return !serverPending.has(taskKey(t))
+  })
+  if (serverPending.size < prevPending) refreshMe()
+  prevPending = serverPending.size
+}
+
+// Click a generated IMAGE → use it as a reference. Single-ref model: replace the
+// existing ref. Multi-ref: append if there's room, else replace the last one.
+function useAsRef(item) {
+  if (!item || !item.url || item.status !== 'done') return
+  if (item.kind === 'video') return
+  const cap = maxRefs.value
+  if (cap <= 0) { flash('当前模型不支持参考图'); return }
+  const ref = { name: 'ref', url: item.url }
+  if (cap === 1) {
+    refImages.value = [ref]
+  } else if (refImages.value.length >= cap) {
+    refImages.value.splice(cap - 1, 1, ref)
+  } else {
+    refImages.value.push(ref)
   }
-  // No pending. If our locally-shown job just finished on the server (same id,
-  // status flipped to success/failed), promote it to the result view — this is
-  // the live "I'm watching my own generation finish" case and stays.
-  if (current.value && current.value.status === 'pending' && latest && latest.id === current.value.id) {
-    current.value = { ...latest, status: latest.status === 'success' ? 'done' : latest.status }
-    if (latest.url) current.value.url = latest.url
-    busy.value = false
-    statusText.value = ''
-    refreshMe()
-    return
+  flash('已加入参考图')
+}
+
+// Grab the LAST frame of a video as a PNG data URL (same-origin → canvas isn't
+// tainted). Used to continue a video from where it ended (首尾帧 models).
+function lastFrameDataUrl(url) {
+  return new Promise((resolve) => {
+    const v = document.createElement('video')
+    v.crossOrigin = 'anonymous'
+    v.muted = true
+    v.preload = 'auto'
+    v.src = url
+    const grab = () => {
+      try {
+        const c = document.createElement('canvas')
+        c.width = v.videoWidth; c.height = v.videoHeight
+        c.getContext('2d').drawImage(v, 0, 0)
+        resolve(c.toDataURL('image/png'))
+      } catch { resolve('') }
+    }
+    v.addEventListener('loadeddata', () => {
+      const t = Math.max(0, (v.duration || 0) - 0.05)
+      if (isFinite(t) && t > 0) v.currentTime = t
+      else grab()
+    })
+    v.addEventListener('seeked', grab)
+    v.addEventListener('error', () => resolve(''))
+  })
+}
+
+// Click a generated VIDEO. For a 首尾帧 (frame) model, set the video's LAST frame
+// as the 首帧 (first reference) — to continue the scene. Otherwise just zoom.
+async function onVideoClick(item) {
+  if (refMode.value === 'frame' && maxRefs.value > 0 && item.url) {
+    const dataUrl = await lastFrameDataUrl(item.url)
+    if (dataUrl) {
+      const ref = { name: 'frame', dataUrl }
+      if (refImages.value.length === 0) refImages.value = [ref]
+      else refImages.value.splice(0, 1, ref)   // replace the 首帧 slot
+      flash('已把视频末帧设为首帧')
+      return
+    }
   }
-  // Intentionally NO restore of an already-finished result on first paint /
-  // navigation: the playground only ever shows an in-progress job (or the one
-  // that just completed while watched). Past results live in /记录 (logs), not
-  // re-echoed onto a freshly opened workspace.
+  lightbox.value = item
 }
 
 function onKey(e) { if (e.key === 'Escape') lightbox.value = null }
@@ -434,10 +485,10 @@ onMounted(async () => {
     applyModelDefaults()
   }
   window.addEventListener('keydown', onKey)
-  // Restore any in-flight or recently-finished job for this user, then poll
-  // every 2s so a parallel tab / device sees changes within one tick.
-  poll()
-  pollTimer = setInterval(poll, 2000)
+  // Fill the grid with the user's recent results, then refresh every 3s so
+  // finished tasks (incl. gateway-timed-out ones) land without a reload.
+  loadHistory()
+  pollTimer = setInterval(loadHistory, 3000)
 })
 onUnmounted(() => {
   window.removeEventListener('keydown', onKey)
@@ -447,18 +498,17 @@ onUnmounted(() => {
 
 <template>
   <section class="theme-text grid lg:grid-cols-[420px_1fr] gap-6">
-    <!-- LEFT: controls — every interactive element accepts :disabled="busy"
-         so the form locks the moment a generation kicks off. Reload, parallel
-         tab and tab-switch all see the same locked state via poll(). -->
+    <!-- LEFT: controls — never locked. 生成 fires an independent task each click,
+         so several generations can run at once (concurrent). -->
     <div class="card p-5 space-y-5 lg:sticky lg:top-24 self-start">
       <!-- mode switch -->
       <div class="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-xl">
-        <button @click="setMode('image')" type="button" :disabled="busy"
+        <button @click="setMode('image')" type="button"
                 class="rounded-lg py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed"
                 :class="mode === 'image' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'">
           <Icon name="files" class="w-4 h-4 inline -mt-0.5" /> 生图
         </button>
-        <button @click="setMode('video')" type="button" :disabled="busy"
+        <button @click="setMode('video')" type="button"
                 class="rounded-lg py-2 text-sm font-medium transition-colors disabled:cursor-not-allowed"
                 :class="mode === 'video' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'">
           <Icon name="video" class="w-4 h-4 inline -mt-0.5" /> 生视频
@@ -469,7 +519,7 @@ onUnmounted(() => {
       <div>
         <label class="block text-xs font-medium text-slate-500 mb-1.5">模型</label>
         <SelectMenu v-if="models.length" :model-value="modelId" @update:model-value="selectModel"
-                    :options="modelOptions" placeholder="选择模型" mono :disabled="busy" />
+                    :options="modelOptions" placeholder="选择模型" mono />
         <div v-else class="rounded-lg border border-dashed border-slate-200 px-3 py-4 text-xs text-slate-400 text-center">
           还没有可用的{{ mode === 'video' ? '视频' : '图像' }}模型 ·
           <router-link to="/admin/models" class="text-slate-700 underline">去添加</router-link>
@@ -479,7 +529,7 @@ onUnmounted(() => {
       <!-- prompt -->
       <div>
         <label class="block text-xs font-medium text-slate-500 mb-1.5">提示词</label>
-        <textarea v-model="prompt" rows="4" :disabled="busy" class="field resize-none disabled:opacity-60 disabled:cursor-not-allowed"
+        <textarea v-model="prompt" rows="4" class="field resize-none disabled:opacity-60 disabled:cursor-not-allowed"
                   placeholder="描述想要的画面…如：黄昏时分,金色麦田里奔跑的金毛猎犬,电影感"></textarea>
       </div>
 
@@ -489,7 +539,7 @@ onUnmounted(() => {
       <div v-if="ratios.length > 0 && showRatio">
         <label class="block text-xs font-medium text-slate-500 mb-1.5">比例</label>
         <div class="flex flex-wrap gap-1.5">
-          <button v-for="r in ratios" :key="r" type="button" @click="ratio = r" :disabled="busy"
+          <button v-for="r in ratios" :key="r" type="button" @click="ratio = r"
                   class="rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   :class="ratio === r ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
             {{ r }}
@@ -500,7 +550,7 @@ onUnmounted(() => {
       <div v-if="resolutions.length > 0">
         <label class="block text-xs font-medium text-slate-500 mb-1.5">{{ mode === 'video' ? '分辨率' : '画质' }}</label>
         <div class="flex flex-wrap gap-1.5">
-          <button v-for="r in resolutions" :key="r" type="button" @click="resolution = r" :disabled="busy"
+          <button v-for="r in resolutions" :key="r" type="button" @click="resolution = r"
                   class="rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   :class="resolution === r ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
             {{ r }}
@@ -511,7 +561,7 @@ onUnmounted(() => {
       <div v-if="mode === 'video' && durations.length > 0">
         <label class="block text-xs font-medium text-slate-500 mb-1.5">时长</label>
         <div class="flex flex-wrap gap-1.5">
-          <button v-for="d in durations" :key="d" type="button" @click="duration = d" :disabled="busy"
+          <button v-for="d in durations" :key="d" type="button" @click="duration = d"
                   class="rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   :class="duration === d ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
             {{ d }}
@@ -528,12 +578,13 @@ onUnmounted(() => {
           </span>
           <span v-if="refsRequired" class="text-rose-500">*</span>
         </label>
-        <div class="flex gap-2 flex-wrap items-start">
+        <div class="flex gap-2 flex-wrap items-start rounded-lg transition-colors"
+             :class="dragOver ? 'ring-2 ring-indigo-400 ring-offset-2 bg-indigo-50/40' : ''"
+             @drop="onDrop" @dragover="onDragOver" @dragleave="onDragLeave">
           <div v-for="(img, i) in refImages" :key="i"
-               class="relative w-20 h-20 rounded-lg overflow-hidden border border-slate-200 bg-slate-50 transition-all"
-               :class="busy ? 'opacity-60 grayscale pointer-events-none' : ''">
+               class="relative w-20 h-20 rounded-lg overflow-hidden border border-slate-200 bg-slate-50 transition-all">
             <img :src="img.dataUrl || img.url" class="w-full h-full object-cover" />
-            <button type="button" @click="removeRef(i)" :disabled="busy"
+            <button type="button" @click="removeRef(i)"
                     class="absolute top-1 right-1 w-5 h-5 rounded-full bg-slate-900/70 text-white hover:bg-rose-500 grid place-items-center disabled:opacity-40 disabled:cursor-not-allowed">
               <Icon name="close" class="w-3 h-3" />
             </button>
@@ -542,20 +593,33 @@ onUnmounted(() => {
               {{ i === 0 ? '首帧' : (i === 1 ? '末帧' : '') }}
             </div>
           </div>
-          <button v-if="refImages.length < maxRefs" type="button" @click="openPicker" :disabled="busy"
-                  class="w-20 h-20 rounded-lg border-2 border-dashed border-slate-200 text-slate-400 hover:bg-slate-50 hover:border-slate-300 grid place-items-center disabled:opacity-40 disabled:cursor-not-allowed">
-            <Icon name="plus" class="w-5 h-5" />
+          <button v-if="refImages.length < maxRefs" type="button" @click="openPicker"
+                  class="w-20 h-20 rounded-lg border-2 border-dashed border-slate-200 text-slate-400 hover:bg-slate-50 hover:border-slate-300 grid place-items-center disabled:opacity-40 disabled:cursor-not-allowed"
+                  :title="dragOver ? '松开以添加' : '点击或拖拽图片到此'">
+            <Icon :name="dragOver ? 'download' : 'plus'" class="w-5 h-5" />
           </button>
         </div>
         <input ref="fileInput" type="file" accept="image/*" multiple class="hidden" @change="onFiles" />
       </div>
 
-      <button @click="run" :disabled="busy || !models.length || price == null || !canAfford"
+      <!-- 生图张数 1–4 (image only) — each is a separate concurrent generation. -->
+      <div v-if="mode === 'image'">
+        <label class="block text-xs font-medium text-slate-500 mb-1.5">张数</label>
+        <div class="flex gap-1.5">
+          <button v-for="n in [1, 2, 3, 4]" :key="n" type="button" @click="count = n"
+                  class="flex-1 rounded-lg py-1.5 text-xs font-medium transition-colors"
+                  :class="count === n ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
+            {{ n }}
+          </button>
+        </div>
+      </div>
+
+      <button @click="run" :disabled="!models.length || price == null || !canAfford"
               class="btn-primary w-full !py-3 flex items-center justify-center gap-2 leading-none">
         <Icon name="spark" class="w-4 h-4 shrink-0" />
-        <span class="leading-none">{{ busy ? (mode === 'video' ? '生成中…请耐心等待' : '生成中…') : '生成' }}</span>
-        <span v-if="!busy && price != null" class="text-xs opacity-70 tabular-nums leading-none">· {{ priceLabel }}</span>
-        <span v-if="!busy && price != null && !canAfford" class="text-xs text-rose-200 leading-none">积分不足</span>
+        <span class="leading-none">生成<span v-if="batchCount > 1"> {{ batchCount }} 张</span></span>
+        <span v-if="price != null" class="text-xs opacity-70 tabular-nums leading-none">· {{ batchCount > 1 ? pointsLabel(price * batchCount) : priceLabel }}</span>
+        <span v-if="price != null && !canAfford" class="text-xs text-rose-200 leading-none">积分不足</span>
       </button>
 
       <!-- Validation / upload errors (model/prompt/ref/price/credits/oversized
@@ -565,59 +629,55 @@ onUnmounted(() => {
 
     </div>
 
-    <!-- RIGHT: single latest result (replaces on each new generation).
-         min-w-0: the 1fr grid track defaults to min-width:auto, so a long
-         unbroken prompt would otherwise blow the column wider than the page
-         (truncate can't shrink a track that won't shrink). -->
-    <div class="space-y-4 min-w-0">
-      <div v-if="!current && !busy"
-           class="card p-14 grid place-items-center text-slate-400 text-center">
-        <span class="w-16 h-16 rounded-2xl bg-slate-100 grid place-items-center mb-4">
-          <Icon name="spark" class="w-7 h-7 text-slate-400" />
-        </span>
-        <p class="text-sm">还没有生成过 — 在左侧写提示词,点击「生成」</p>
-        <router-link to="/logs" class="text-xs text-slate-500 hover:text-white mt-3 transition-colors">查看历史记录 →</router-link>
-      </div>
-
-      <div v-else-if="current" class="card overflow-hidden">
-        <div class="px-5 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
-          <div class="min-w-0">
-            <div class="text-sm font-medium line-clamp-2 break-words">{{ current.prompt }}</div>
-            <div class="text-[11px] text-slate-400 mt-0.5 font-mono">
-              {{ current.model }} · {{ current.ratio }} · {{ current.resolution }}
-              <span v-if="current.kind === 'video'"> · {{ current.duration }}</span>
-              <span v-if="current.elapsed_ms"> · {{ (current.elapsed_ms / 1000).toFixed(1) }}s</span>
+    <!-- RIGHT: concurrent gallery — one card per task, newest first; filled up to
+         10 with the user's recent results. No lock: 生成 can be clicked anytime.
+         min-w-0 keeps a long prompt from blowing the 1fr track wider than the page. -->
+    <div class="min-w-0">
+      <div v-if="displayItems.length" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+        <div v-for="item in displayItems" :key="item.id"
+             class="group relative rounded-xl overflow-hidden ring-1 ring-slate-200 bg-slate-100 aspect-[4/5]">
+          <!-- done: media + caption -->
+          <template v-if="item.status === 'done' && item.url">
+            <video v-if="item.kind === 'video'" :src="item.url" muted loop preload="metadata"
+                   @click="onVideoClick(item)"
+                   :title="refMode === 'frame' && maxRefs > 0 ? '点击:把末帧设为首帧' : '点击放大'"
+                   class="absolute inset-0 w-full h-full object-cover cursor-pointer"
+                   @mouseenter="$event.target.play && $event.target.play()"
+                   @mouseleave="$event.target.pause && $event.target.pause()" />
+            <img v-else :src="item.url" loading="lazy" @click="useAsRef(item)"
+                 :title="maxRefs > 0 ? '点击作为参考图' : ''"
+                 class="absolute inset-0 w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                 :class="maxRefs > 0 ? 'cursor-pointer' : 'cursor-default'" />
+            <div class="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/85 via-black/30 to-transparent pointer-events-none"></div>
+            <!-- hover action: just zoom (clicking the image itself = 参考图) -->
+            <div class="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button @click.stop="lightbox = item" title="放大"
+                      class="w-7 h-7 rounded-lg bg-black/50 ring-1 ring-white/10 hover:bg-black/70 text-white grid place-items-center">
+                <Icon name="open" class="w-3.5 h-3.5" />
+              </button>
+            </div>
+            <div class="absolute inset-x-0 bottom-0 p-2.5 pointer-events-none">
+              <div class="text-[11px] leading-tight text-white font-medium line-clamp-2" :title="item.prompt">{{ item.prompt }}</div>
+              <div class="text-[9px] text-white/55 mt-0.5 font-mono truncate">{{ item.model }}<span v-if="item.elapsed_ms"> · {{ (item.elapsed_ms / 1000).toFixed(1) }}s</span></div>
+            </div>
+          </template>
+          <!-- pending / running -->
+          <div v-else-if="item.status === 'pending' || item.status === 'running'"
+               class="absolute inset-0 grid place-items-center text-slate-400 text-xs px-3 text-center">
+            <div class="flex flex-col items-center gap-2">
+              <span class="w-10 h-10 rounded-xl bg-white grid place-items-center animate-pulse"><Icon name="spark" class="w-4 h-4" /></span>
+              {{ item.kind === 'video' ? '生成视频中…' : '生成中…' }}
+              <span class="text-[10px] text-slate-400/80 line-clamp-1 max-w-full">{{ item.prompt }}</span>
             </div>
           </div>
-          <!-- only when a finished result exists — hidden while pending/failed -->
-          <div v-if="current.url && current.status !== 'pending' && current.status !== 'failed'"
-               class="flex items-center gap-1.5 shrink-0">
-            <a :href="current.url" :download="''" class="btn-soft" title="下载">
-              <Icon name="download" class="w-3.5 h-3.5" />
-            </a>
-            <button @click="copyLink(current.url)" class="btn-soft" title="复制链接">
-              <Icon name="copy" class="w-3.5 h-3.5" />
-            </button>
+          <!-- failed -->
+          <div v-else class="absolute inset-0 grid place-items-center text-rose-500 text-xs px-3 text-center">
+            <div>
+              <Icon name="close" class="w-6 h-6 mx-auto mb-1 opacity-60" />
+              <div>生成失败</div>
+              <div v-if="item.error" class="text-[10px] text-rose-400 line-clamp-2 mt-1">{{ item.error }}</div>
+            </div>
           </div>
-        </div>
-
-        <div class="bg-slate-50 grid place-items-center min-h-[260px]">
-          <div v-if="current.status === 'pending'" class="text-sm text-slate-400 py-12 flex flex-col items-center gap-2">
-            <span class="w-10 h-10 rounded-xl bg-white grid place-items-center animate-pulse">
-              <Icon name="spark" class="w-4 h-4 text-slate-400" />
-            </span>
-            {{ statusText || '生成中…' }}
-          </div>
-          <div v-else-if="current.status === 'failed'" class="text-sm text-rose-600 py-12 px-5 max-w-xl text-center">
-            <div class="font-medium mb-1">生成失败</div>
-            <div class="text-xs text-rose-500 break-all">{{ current.error }}</div>
-          </div>
-          <template v-else>
-            <video v-if="current.kind === 'video'" :src="current.url" controls
-                   class="max-w-full max-h-[600px] object-contain" />
-            <img v-else :src="current.url" @click="lightbox = current"
-                 class="max-w-full max-h-[600px] object-contain cursor-zoom-in" />
-          </template>
         </div>
       </div>
     </div>

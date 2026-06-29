@@ -18,6 +18,14 @@ func NewModelRepository(db *gorm.DB) *ModelRepository {
 	return &ModelRepository{db: db}
 }
 
+// IncrementGenerationCount bumps a model's persistent success counter by 1.
+// Best-effort: a missing model id is a no-op (0 rows affected, no error).
+func (r *ModelRepository) IncrementGenerationCount(ctx context.Context, modelID string) error {
+	return r.db.WithContext(ctx).Model(&model.ModelConfig{}).
+		Where("id = ?", modelID).
+		UpdateColumn("generation_count", gorm.Expr("generation_count + 1")).Error
+}
+
 func (r *ModelRepository) List(ctx context.Context) ([]model.ModelConfig, error) {
 	var items []model.ModelConfig
 	// Higher weight floats to the top of the dropdown / admin list; ties fall

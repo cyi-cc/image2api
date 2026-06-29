@@ -495,6 +495,10 @@ func (s *V1Service) prepareImageExecution(ctx context.Context, principal *APIPri
 	if err := s.events.UpdateStatus(ctx, eventID, "success", "", elapsedMS); err != nil {
 		return nil, err
 	}
+	_ = s.models.IncrementGenerationCount(ctx, modelItem.ID)
+	if principal != nil && principal.User != nil {
+		_ = s.users.IncrementGenerationCount(ctx, principal.User.ID)
+	}
 	if charge {
 		_ = s.maybeGrantInviteReward(ctx, principal)
 	}
@@ -615,6 +619,10 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 	if err := s.events.UpdateStatus(ctx, eventID, "success", "", elapsedMS); err != nil {
 		return nil, err
 	}
+	_ = s.models.IncrementGenerationCount(ctx, modelItem.ID)
+	if principal != nil && principal.User != nil {
+		_ = s.users.IncrementGenerationCount(ctx, principal.User.ID)
+	}
 	if charge {
 		_ = s.maybeGrantInviteReward(ctx, principal)
 	}
@@ -709,6 +717,10 @@ func (s *V1Service) runVideoJob(ctx context.Context, principal *APIPrincipal, in
 	// Store the upstream URL as the event's "file"; /content proxies it.
 	if err := s.events.MarkVideoReady(ctx, eventID, videoURL, int(time.Since(startedAt).Milliseconds())); err != nil {
 		return
+	}
+	_ = s.models.IncrementGenerationCount(ctx, modelItem.ID)
+	if principal != nil && principal.User != nil {
+		_ = s.users.IncrementGenerationCount(ctx, principal.User.ID)
 	}
 	_ = s.maybeGrantInviteReward(ctx, principal)
 }
@@ -2810,7 +2822,7 @@ func (s *V1Service) markTokenFailure(ctx context.Context, pool string, token mod
 		// the cookie. chatgpt/runway/leonardo auth means the stored credential is
 		// dead — a raw JWT (chatgpt/runway) or a cookie whose session no longer
 		// authenticates (leonardo) — there's nothing left to refresh from.
-		if pool == "chatgpt" || pool == "runway" || pool == "leonardo" || pool == "krea" || pool == "imagine" {
+		if pool == "chatgpt" || pool == "runway" || pool == "leonardo" || pool == "krea" || pool == "imagine" || pool == "grok" {
 			patch["status"] = "disabled"
 			patch["dead"] = true
 		}

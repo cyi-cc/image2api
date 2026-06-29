@@ -34,7 +34,7 @@ const routes = [
     children: [
       { path: '', component: HomeView, meta: { label: '首页' } },
       { path: 'user', component: PlaygroundView, meta: { label: '画图' } },
-      { path: 'logs', component: UserLogsView, meta: { label: '记录' } },
+      { path: 'logs', component: UserLogsView, meta: { label: '图片' } },
       { path: 'mylogs', component: UserLogsTableView, meta: { label: '日志' } },
       { path: 'invite', component: InviteView, meta: { label: '邀请' } },
       { path: 'docs', component: DocsView, meta: { label: '文档' } },

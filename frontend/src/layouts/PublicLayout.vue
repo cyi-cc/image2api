@@ -107,10 +107,11 @@ const currentLabel = computed(() => {
            stamp doesn't jump around. -->
       <header class="relative z-10 px-8 md:px-14 pt-10 pb-4 flex items-center justify-between gap-4">
         <div class="flex items-baseline gap-2">
-          <span class="text-[22px] font-bold tracking-tight bg-gradient-to-r from-fuchsia-300 via-violet-300 to-sky-300 bg-clip-text text-transparent">
+          <img v-if="site.logo" :src="site.logo" :alt="site.title" class="h-7 w-auto self-center object-contain" />
+          <span v-else class="text-[22px] font-bold tracking-tight bg-gradient-to-r from-fuchsia-300 via-violet-300 to-sky-300 bg-clip-text text-transparent">
             {{ site.title }}
           </span>
-          <span class="text-[10px] uppercase tracking-[0.3em] text-[color:var(--fg-faint)]">{{ route.path === '/' ? 'AI 生图 · 生视频' : currentLabel }}</span>
+          <span class="text-[10px] uppercase tracking-[0.3em] text-[color:var(--fg-faint)]">{{ route.path === '/' ? (site.subtitle || 'AI 生图 · 生视频') : currentLabel }}</span>
         </div>
         <router-link v-if="showBalance" to="/settings"
                      class="text-xs text-[color:var(--fg-2)] hover:text-[color:var(--fg)] tabular-nums transition-colors">

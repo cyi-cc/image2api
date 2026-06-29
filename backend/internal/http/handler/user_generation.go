@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"backend/internal/service"
 	"github.com/gin-gonic/gin"
@@ -176,6 +177,16 @@ func (h *UserGenerationHandler) Logs(c *gin.Context) {
 	offset := parseInt(c.Query("offset"), 0)
 	kind := c.Query("kind")
 	status := c.Query("status")
+	// statuses=pending,success → status IN (...). Used by the 画图台 grid so it can
+	// fetch exactly the rows it shows (进行中 + 成功) in one query, server-side.
+	var statuses []string
+	if s := strings.TrimSpace(c.Query("statuses")); s != "" {
+		for _, p := range strings.Split(s, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				statuses = append(statuses, p)
+			}
+		}
+	}
 	// Secure-by-default: always scope to the caller's OWN records. This endpoint
 	// serves the front-end 日志 / 创作记录 pages, so an admin viewing their personal
 	// records must NOT see other users' work. Only an admin who explicitly opts
@@ -195,7 +206,7 @@ func (h *UserGenerationHandler) Logs(c *gin.Context) {
 	// rows with real media (success + stored file), not failed/pending events.
 	hasFile := c.Query("has_file") == "1" || c.Query("has_file") == "true"
 
-	items, total, stats, err := h.admin.Logs(c.Request.Context(), limit, offset, kind, status, nil, userID, excludeSource, source, hasFile)
+	items, total, stats, err := h.admin.Logs(c.Request.Context(), limit, offset, kind, status, statuses, nil, userID, excludeSource, source, hasFile)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to load logs"})
 		return
@@ -430,7 +441,7 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"type":                 "video",
 			"ratios":               []string{"2:3", "3:2", "1:1", "9:16", "16:9"},
 			"resolutions":          []string{"720p"},
-			"durations":            []string{"6s", "10s"},
+			"durations":            []string{"6s", "10s", "15s"},
 			"max_reference_images": 6,
 			"reference_mode":       "asset",
 			"description":          "Grok Imagine video (文/图生视频)",

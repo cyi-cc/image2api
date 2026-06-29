@@ -37,12 +37,14 @@ async function saveMedia() {
 }
 
 // ---- site (branding shown across the app) ----
-const siteForm = reactive({ title: '', qq: '', qq_link: '', qq_group: '', qq_group_link: '', email: '', shop: '' })
+const siteForm = reactive({ title: '', logo: '', subtitle: '', qq: '', qq_link: '', qq_group: '', qq_group_link: '', email: '', shop: '' })
 const siteBusy = ref(false); const siteSaved = ref(false)
 async function loadSite() {
   const r = await api('/settings/site')
   if (r.ok && r.data) {
     siteForm.title = r.data.title || ''
+    siteForm.logo = r.data.logo || ''
+    siteForm.subtitle = r.data.subtitle || ''
     const c = r.data.contact || {}
     siteForm.qq = c.qq || ''; siteForm.qq_link = c.qq_link || ''
     siteForm.qq_group = c.qq_group || ''
@@ -54,10 +56,14 @@ async function saveSite() {
   siteBusy.value = true; siteSaved.value = false
   const r = await api('/settings/site', jsonBody('PUT', {
     title: siteForm.title,
+    logo: siteForm.logo,
+    subtitle: siteForm.subtitle,
     contact: { qq: siteForm.qq, qq_link: siteForm.qq_link, qq_group: siteForm.qq_group, qq_group_link: siteForm.qq_group_link, email: siteForm.email, shop: siteForm.shop },
   }))
   siteBusy.value = false
   if (r.ok && r.data) {
+    site.logo = r.data.data?.logo ?? siteForm.logo.trim()
+    site.subtitle = r.data.data?.subtitle ?? siteForm.subtitle.trim()
     // Mirror the change into the shared `site` store so every header /
     // wordmark / tab title updates without a reload. The PUT response is
     // nested ({ ok, data: { title } }) unlike the flat GET, so read the
@@ -211,6 +217,14 @@ onMounted(() => { loadSite(); loadReg(); loadSmtp(); loadCredits(); loadProxy();
         <label class="row">
           <span><span class="lbl">网页主标题</span><span class="hint">显示在浏览器标签、首页 Logo、侧栏和登录卡上。未设置时默认显示 "Vivid"。</span></span>
           <input v-model="siteForm.title" placeholder="Vivid" class="txt" />
+        </label>
+        <label class="row">
+          <span><span class="lbl">Logo 图片地址</span><span class="hint">侧栏 / 公开页头部显示的 Logo 图片 URL。留空则用文字主标题。</span></span>
+          <input v-model="siteForm.logo" placeholder="https://.../logo.png" class="txt" />
+        </label>
+        <label class="row">
+          <span><span class="lbl">子标题</span><span class="hint">主标题下方的副标题 / slogan,公开页展示。留空则不显示。</span></span>
+          <input v-model="siteForm.subtitle" placeholder="如:聚合顶级 AI 模型的生图生视频平台" class="txt" />
         </label>
         <label class="row">
           <span><span class="lbl">联系 QQ</span><span class="hint">QQ 号(显示用)。留空则不显示该项。</span></span>

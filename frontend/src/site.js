@@ -8,6 +8,8 @@ const BASE = import.meta.env.VITE_API_BASE || ''
 
 export const site = reactive({
   title: 'Vivid',
+  logo: '',
+  subtitle: '',
   // Defaults so the 关于 page is never blank even if /site hasn't loaded (or a
   // cache serves an older payload without `contact`). The backend value, once
   // fetched, overrides these.
@@ -28,6 +30,8 @@ export async function loadSite() {
     if (r.ok) {
       const data = await r.json()
       if (data.title) site.title = String(data.title)
+      site.logo = data.logo ? String(data.logo) : ''
+      site.subtitle = data.subtitle ? String(data.subtitle) : ''
       if (data.contact) site.contact = { ...site.contact, ...data.contact }
     }
   } catch { /* offline — keep the default. */ }

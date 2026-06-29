@@ -7,6 +7,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, generatedUrl } from '../api'
 import { fmtDate, fmtClock, fmtTs } from '../utils/format'
+import { copyText } from '../utils/clipboard'
 import { points } from '../credits'
 import Icon from '../components/Icon.vue'
 import MediaLightbox from '../components/MediaLightbox.vue'
@@ -22,6 +23,15 @@ const search = ref('')
 const page = ref(1)
 const pageSize = 20
 const lightbox = ref(null)
+
+const toast = ref('')
+let toastTimer = null
+async function copyPrompt(e) {
+  if (!e.prompt) return
+  toast.value = (await copyText(e.prompt)) ? '指令已复制' : '复制失败'
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => (toast.value = ''), 1800)
+}
 
 // 来源筛选走服务端:画图台 = source "user",API = source "v1"。
 const SOURCE_PARAM = { web: 'user', api: 'v1' }
@@ -230,7 +240,10 @@ const params = (e) => {
               </div>
             </td>
             <td class="px-3 py-3 align-middle min-w-0">
-              <div class="text-xs text-slate-700 truncate" :title="e.prompt">{{ e.prompt || '—' }}</div>
+              <div class="text-xs text-slate-700 truncate transition-colors"
+                   :class="e.prompt ? 'cursor-pointer hover:text-slate-900' : ''"
+                   :title="e.prompt ? '点击复制提示词' : ''"
+                   @click="e.prompt && copyPrompt(e)">{{ e.prompt || '—' }}</div>
               <div v-if="e.error" class="mt-1 text-[11px] text-rose-600 truncate" :title="e.error">⚠ {{ e.error }}</div>
             </td>
             <td class="px-3 py-3 align-middle text-xs text-slate-500 tabular-nums">{{ params(e) || '—' }}</td>
@@ -265,6 +278,11 @@ const params = (e) => {
       :meta="[lightbox.model, lightbox.ratio, lightbox.resolution, lightbox.duration].filter(Boolean).join(' · ')"
       :download-name="lightbox.file"
       @close="lightbox = null" />
+
+    <div v-if="toast"
+         class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-slate-900 text-white text-xs px-4 py-2 rounded-lg shadow-lg">
+      {{ toast }}
+    </div>
   </section>
 </template>
 

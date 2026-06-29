@@ -29,7 +29,8 @@ const currentLabel = computed(() => route.meta?.label || '')
     <!-- ===== Sidebar ===== -->
     <aside class="w-60 shrink-0 border-r border-[color:var(--hairline)] bg-[var(--surface)] backdrop-blur-md flex flex-col">
       <router-link to="/" class="h-16 flex items-center gap-2.5 px-5 border-b border-[color:var(--hairline)] group">
-        <Logo :size="32" class="rounded-[10px] shadow-lg shadow-violet-500/20 ring-1 ring-white/10" />
+        <img v-if="site.logo" :src="site.logo" :alt="site.title" class="w-8 h-8 rounded-[10px] object-contain shadow-lg shadow-violet-500/20 ring-1 ring-white/10" />
+        <Logo v-else :size="32" class="rounded-[10px] shadow-lg shadow-violet-500/20 ring-1 ring-white/10" />
         <div class="leading-tight min-w-0">
           <div class="text-sm font-semibold truncate tracking-tight text-[color:var(--fg)]">{{ site.title }}</div>
           <div class="text-[11px] text-[color:var(--fg-3)] truncate">Admin</div>

@@ -42,6 +42,28 @@ func (s *SiteService) SetTitle(ctx context.Context, title string) (string, error
 	return title, nil
 }
 
+func (s *SiteService) get(ctx context.Context, key string) string {
+	v, _ := s.settings.GetValue(ctx, key)
+	return strings.TrimSpace(v)
+}
+
+// Logo / Subtitle are admin-editable branding shown on the public site.
+func (s *SiteService) Logo(ctx context.Context) string     { return s.get(ctx, "site.logo") }
+func (s *SiteService) Subtitle(ctx context.Context) string { return s.get(ctx, "site.subtitle") }
+
+// SetBranding persists logo / subtitle (either may be empty).
+func (s *SiteService) SetBranding(ctx context.Context, logo, subtitle string) error {
+	for k, v := range map[string]string{
+		"site.logo":     strings.TrimSpace(logo),
+		"site.subtitle": strings.TrimSpace(subtitle),
+	} {
+		if err := s.settings.UpsertValue(ctx, k, v); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Contact is the admin-editable "联系我们" info shown in the public 关于 section.
 type Contact struct {
 	QQ          string `json:"qq"`

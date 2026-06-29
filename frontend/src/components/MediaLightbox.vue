@@ -3,9 +3,11 @@
 // admin (图片管理 / 日志) and the user-facing (画图记录) surfaces. Parent controls
 // mount via v-if and passes the resolved media URL + meta; the component owns the
 // overlay shell, image/video element, prompt + meta block, and action buttons.
+import { ref } from 'vue'
+import { copyText } from '../utils/clipboard'
 import Icon from './Icon.vue'
 
-defineProps({
+const props = defineProps({
   src: { type: String, required: true },     // resolved media URL (generatedUrl)
   kind: { type: String, default: 'image' },  // 'image' | 'video'
   prompt: { type: String, default: '' },
@@ -14,12 +16,25 @@ defineProps({
   downloadName: { type: String, default: '' },
 })
 const emit = defineEmits(['close'])
+
+const toast = ref('')
+let toastTimer = null
+async function copyPrompt() {
+  if (!props.prompt) return
+  toast.value = (await copyText(props.prompt)) ? '指令已复制' : '复制失败'
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => (toast.value = ''), 1800)
+}
 </script>
 
 <template>
   <transition name="lb-fade" appear>
     <div class="media-card fixed inset-0 z-50 bg-slate-950/85 backdrop-blur-sm flex items-center justify-center p-6"
          @click.self="emit('close')">
+      <div v-if="toast"
+           class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] bg-slate-900 text-white text-xs px-4 py-2 rounded-lg shadow-lg ring-1 ring-white/10">
+        {{ toast }}
+      </div>
       <!-- Wrapper shrinks to the media's rendered width, so the info row below
            lines up flush with the image's left & right edges (one clean column). -->
       <div class="flex flex-col max-h-full max-w-full">
@@ -29,7 +44,8 @@ const emit = defineEmits(['close'])
 
         <div class="mt-3 flex items-start justify-between gap-4 text-white">
           <div class="min-w-0 flex-1">
-            <div v-if="prompt" class="text-sm font-medium leading-snug line-clamp-3 break-words" :title="prompt">{{ prompt }}</div>
+            <div v-if="prompt" @click="copyPrompt" title="点击复制提示词"
+                 class="text-sm font-medium leading-snug line-clamp-3 break-words cursor-pointer transition-colors hover:text-white/75">{{ prompt }}</div>
             <div v-if="meta" class="text-xs text-white/60 mt-1 font-mono break-all">{{ meta }}</div>
             <div v-if="metaSub" class="text-xs text-white/45 mt-1">{{ metaSub }}</div>
           </div>

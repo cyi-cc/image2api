@@ -21,5 +21,11 @@ func (h *SiteHandler) Public(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to load site"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"title": title, "contact": h.site.Contact(c.Request.Context())})
+	ctx := c.Request.Context()
+	c.JSON(http.StatusOK, gin.H{
+		"title":    title,
+		"logo":     h.site.Logo(ctx),
+		"subtitle": h.site.Subtitle(ctx),
+		"contact":  h.site.Contact(ctx),
+	})
 }

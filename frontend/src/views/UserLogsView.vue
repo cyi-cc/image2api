@@ -3,6 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api, generatedUrl } from '../api'
 import { fmtTs } from '../utils/format'
+import { copyText } from '../utils/clipboard'
 import Icon from '../components/Icon.vue'
 import MediaLightbox from '../components/MediaLightbox.vue'
 
@@ -80,12 +81,17 @@ function fmtMs(ms) {
 
 
 async function copyLink(name) {
-  try {
-    const u = generatedUrl(name)
-    await navigator.clipboard.writeText(u.startsWith('http') ? u : location.origin + u)
-    toast.value = '链接已复制'
-    setTimeout(() => (toast.value = ''), 1500)
-  } catch {}
+  const u = generatedUrl(name)
+  const ok = await copyText(u.startsWith('http') ? u : location.origin + u)
+  toast.value = ok ? '链接已复制' : '复制失败'
+  setTimeout(() => (toast.value = ''), 1500)
+}
+
+async function copyPrompt(e) {
+  if (!e.prompt) return
+  const ok = await copyText(e.prompt)
+  toast.value = ok ? '指令已复制' : '复制失败'
+  setTimeout(() => (toast.value = ''), 1500)
 }
 
 const toast = ref('')
@@ -198,7 +204,10 @@ onUnmounted(() => {
 
         <!-- caption (over a real image) -->
         <div v-if="e.status === 'success' && e.file" class="absolute inset-x-0 bottom-0 p-3 pointer-events-none">
-          <div class="text-[12px] leading-tight text-white font-medium line-clamp-2 mb-1" :title="e.prompt">{{ e.prompt }}</div>
+          <div class="text-[12px] leading-tight text-white font-medium line-clamp-2 mb-1 transition-colors"
+               :class="e.prompt ? 'pointer-events-auto cursor-pointer hover:text-white/75' : ''"
+               :title="e.prompt ? '点击复制提示词' : ''"
+               @click.stop="copyPrompt(e)">{{ e.prompt }}</div>
           <div class="text-[10px] text-white/55 flex items-center justify-between gap-2 tabular-nums">
             <span class="truncate" :title="e.model || ''">{{ e.model || '—' }}</span>
             <span class="shrink-0 flex items-center gap-1">

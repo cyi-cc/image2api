@@ -21,6 +21,7 @@ type User struct {
 	InviteRewardAt   *time.Time
 	CheckinLast      string `gorm:"size:32"`
 	CheckinStreak    int    `gorm:"not null;default:0"`
+	GenerationCount  int64  `gorm:"not null;default:0"`
 	LastLoginAt      *time.Time
 	LastLoginIP      string `gorm:"size:128"`
 	CreatedAt        time.Time
@@ -111,6 +112,10 @@ type ModelConfig struct {
 	// weight floats to the top (matches ShowcaseItem.Weight semantics). Ties fall
 	// back to created_at desc. Default 0.
 	Weight             int `gorm:"not null;default:0;index"`
+	// GenerationCount is a persistent success counter, incremented once per
+	// successful generation. Independent of the event_log (which is subject to
+	// retention / manual clearing), so the admin "次数" is a true running total.
+	GenerationCount int64 `gorm:"not null;default:0"`
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 }
@@ -197,5 +202,15 @@ func AutoMigrateModels() []any {
 		&TokenAccount{},
 		&RefreshProfile{},
 		&SiteSetting{},
+		&StatCounter{},
 	}
+}
+
+// StatCounter is a persistent monotonic counter (key → value), independent of the
+// event_log (which is retention-pruned / clearable). Used for the dashboard
+// cumulative cards (total/success/failed/image/video/api) so they never reset.
+type StatCounter struct {
+	Key       string `gorm:"primaryKey;size:64"`
+	Value     int64  `gorm:"not null;default:0"`
+	UpdatedAt time.Time
 }

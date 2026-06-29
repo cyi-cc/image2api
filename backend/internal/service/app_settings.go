@@ -358,6 +358,12 @@ func (s *AppSettingsService) loadSMTPConfig(ctx context.Context) (SMTPConfig, er
 	if err != nil {
 		return SMTPConfig{}, err
 	}
+	// The verification-email subject uses the site title, e.g. "<title> 邮箱验证码".
+	title, _ := s.settings.GetValue(ctx, "site.title")
+	title = strings.TrimSpace(title)
+	if title == "" {
+		title = "Vivid"
+	}
 	return SMTPConfig{
 		Host:     current.Host,
 		Port:     current.Port,
@@ -365,6 +371,7 @@ func (s *AppSettingsService) loadSMTPConfig(ctx context.Context) (SMTPConfig, er
 		Password: password,
 		FromAddr: current.FromAddr,
 		UseTLS:   current.UseTLS,
+		Subject:  title + " 邮箱验证码",
 	}, nil
 }
 

@@ -44,7 +44,7 @@ func (c *Client) GenerateVideo(ctx context.Context, token, prompt, aspectRatio, 
 	if strings.TrimSpace(resolution) == "" {
 		resolution = "720p"
 	}
-	if seconds != 6 && seconds != 10 {
+	if seconds != 6 && seconds != 10 && seconds != 15 {
 		seconds = 10
 	}
 

@@ -906,6 +906,7 @@ func (s *TokenService) ImportGrokToken(ctx context.Context, ssoToken, tokenID st
 	return item, nil
 }
 
+
 func (s *TokenService) checkPendingGrok(tokenID, ssoToken string) {
 	defer func() {
 		if r := recover(); r != nil {

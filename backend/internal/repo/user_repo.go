@@ -87,6 +87,16 @@ func (r *UserRepository) GetByInviteCode(ctx context.Context, code string) (*mod
 	return &user, nil
 }
 
+// IncrementGenerationCount bumps a user's persistent success counter by 1.
+func (r *UserRepository) IncrementGenerationCount(ctx context.Context, userID string) error {
+	if userID == "" {
+		return nil
+	}
+	return r.db.WithContext(ctx).Model(&model.User{}).
+		Where("id = ?", userID).
+		UpdateColumn("generation_count", gorm.Expr("generation_count + 1")).Error
+}
+
 func (r *UserRepository) List(ctx context.Context) ([]model.User, error) {
 	var users []model.User
 	if err := r.db.WithContext(ctx).Preload("APIKeys").Order("created_at desc").Find(&users).Error; err != nil {

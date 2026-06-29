@@ -18,7 +18,8 @@ type EventListFilter struct {
 	Limit         int
 	Offset        int
 	Kind          string
-	Status        string
+	Status        string   // single status (status = ?)
+	Statuses      []string // multiple statuses (status IN (?)) — used by the 画图台 grid
 	Since         *time.Time
 	UserID        string
 	ExcludeSource string // when set, omit rows with this source (e.g. hide API-key "v1" usage from the customer logs page)
@@ -46,6 +47,9 @@ func (r *EventRepository) List(ctx context.Context, filter EventListFilter) ([]m
 	}
 	if filter.Status != "" {
 		q = q.Where("status = ?", filter.Status)
+	}
+	if len(filter.Statuses) > 0 {
+		q = q.Where("status IN ?", filter.Statuses)
 	}
 	if filter.Since != nil {
 		q = q.Where("ts > ?", *filter.Since)
@@ -443,7 +447,49 @@ func (r *EventRepository) PurgeStale(ctx context.Context, maxAge time.Duration) 
 }
 
 func (r *EventRepository) Create(ctx context.Context, item *model.EventLog) error {
-	return r.db.WithContext(ctx).Create(item).Error
+	if err := r.db.WithContext(ctx).Create(item).Error; err != nil {
+		return err
+	}
+	// Persistent cumulative counters (survive log retention/clearing): every
+	// created event bumps total + its kind + (api source).
+	deltas := map[string]int64{"total": 1}
+	if item.Kind == "video" {
+		deltas["video"] = 1
+	} else if item.Kind == "image" {
+		deltas["image"] = 1
+	}
+	if item.Source == "v1" {
+		deltas["api"] = 1
+	}
+	r.incrCounters(ctx, deltas)
+	return nil
+}
+
+// incrCounters upserts monotonic counters (stat_counters). Best-effort: a counter
+// failure must never fail the generation, so errors are swallowed.
+func (r *EventRepository) incrCounters(ctx context.Context, deltas map[string]int64) {
+	for k, n := range deltas {
+		if n == 0 {
+			continue
+		}
+		_ = r.db.WithContext(ctx).Exec(
+			`INSERT INTO stat_counters (key, value, updated_at) VALUES (?, ?, now())
+			 ON CONFLICT (key) DO UPDATE SET value = stat_counters.value + EXCLUDED.value, updated_at = now()`,
+			k, n).Error
+	}
+}
+
+// Counters returns all persistent counters as key→value.
+func (r *EventRepository) Counters(ctx context.Context) (map[string]int64, error) {
+	var rows []model.StatCounter
+	if err := r.db.WithContext(ctx).Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]int64, len(rows))
+	for _, x := range rows {
+		out[x.Key] = x.Value
+	}
+	return out, nil
 }
 
 // GetByID fetches a single event (nil, nil when not found). Used by the async
@@ -462,16 +508,22 @@ func (r *EventRepository) GetByID(ctx context.Context, id string) (*model.EventL
 // MarkVideoReady completes an async video job: status=success, file=upstream URL
 // (proxied on /content — never persisted), elapsed.
 func (r *EventRepository) MarkVideoReady(ctx context.Context, eventID, fileURL string, elapsedMS int) error {
-	return r.db.WithContext(ctx).
+	// Guard on a real transition (status <> success) so the success counter is
+	// incremented exactly once even if this fires twice / concurrently.
+	res := r.db.WithContext(ctx).
 		Model(&model.EventLog{}).
-		Where("id = ?", eventID).
+		Where("id = ? AND status <> ?", eventID, "success").
 		Updates(map[string]any{
 			"status":     "success",
 			"file":       fileURL,
 			"error":      "",
 			"elapsed_ms": elapsedMS,
 			"updated_at": time.Now(),
-		}).Error
+		})
+	if res.Error == nil && res.RowsAffected > 0 {
+		r.incrCounters(ctx, map[string]int64{"success": 1})
+	}
+	return res.Error
 }
 
 func (r *EventRepository) UpdateStatus(ctx context.Context, eventID, status, errMsg string, elapsedMS int) error {
@@ -488,10 +540,20 @@ func (r *EventRepository) UpdateStatus(ctx context.Context, eventID, status, err
 		// "成功 + abandoned" at once.
 		patch["error"] = ""
 	}
-	return r.db.WithContext(ctx).
+	// Guard on a real transition so the success/failed counters increment exactly
+	// once per event even under a duplicate/concurrent terminal status update.
+	res := r.db.WithContext(ctx).
 		Model(&model.EventLog{}).
-		Where("id = ?", eventID).
-		Updates(patch).Error
+		Where("id = ? AND status <> ?", eventID, status).
+		Updates(patch)
+	if res.Error == nil && res.RowsAffected > 0 {
+		if status == "success" {
+			r.incrCounters(ctx, map[string]int64{"success": 1})
+		} else if status == "failed" {
+			r.incrCounters(ctx, map[string]int64{"failed": 1})
+		}
+	}
+	return res.Error
 }
 
 // MarkRefunded atomically claims the right to refund this event exactly once:

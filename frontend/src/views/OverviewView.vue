@@ -37,6 +37,8 @@ async function refreshAll() {
 const EMPTY_WINDOW = { total: 0, success: 0, failed: 0, pending: 0, image: 0, video: 0, api: 0, web: 0, spent: 0 }
 const day = computed(() => dash.value?.day || EMPTY_WINDOW)
 const week = computed(() => dash.value?.week || EMPTY_WINDOW)
+// All-time persistent counters (stat_counters) — independent of log retention.
+const lifetime = computed(() => dash.value?.lifetime || {})
 const successRate = computed(() => (day.value.total ? Math.round((day.value.success / day.value.total) * 100) : 0))
 
 // Direction vs the previous 24h (24–48h ago) — a quiet day after a busy week is
@@ -54,7 +56,7 @@ const avg24hMs = computed(() => stats.value?.avg_elapsed_ms_24h ?? null)
 
 // ---- range-toggled top-N analytics (both windows ship in the payload, so the
 // 24h/7d switch is instant — no re-fetch) ----
-const rangeLabel = computed(() => (range.value === 'week' ? '近 7 天' : '近 24h'))
+const rangeLabel = computed(() => (range.value === 'week' ? '近 3 天' : '近 24h'))
 const analytics = computed(() => dash.value?.analytics?.[range.value] || { models: [], failures: [], top_users: [] })
 const modelUsage = computed(() => analytics.value.models || [])
 const usageMax = computed(() => Math.max(1, ...modelUsage.value.map((m) => m.count)))
@@ -153,7 +155,7 @@ onUnmounted(() => clearInterval(timer))
     </div>
 
     <!-- ===== KPI strip ===== -->
-    <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
+    <div class="grid grid-cols-2 lg:grid-cols-5 gap-3">
       <!-- 用户 -->
       <div class="card p-4">
         <div class="flex items-center justify-between">
@@ -193,6 +195,24 @@ onUnmounted(() => clearInterval(timer))
         </div>
         <div v-if="day.total" class="text-[10px] text-white/40 mt-1 tabular-nums">
           Web {{ day.web }} · API {{ day.api }} · 图 {{ day.image }} · 视 {{ day.video }}
+        </div>
+      </div>
+
+      <!-- 累计生成(全部 · 持久计数,不随日志清理变化) -->
+      <div class="card p-4">
+        <div class="flex items-center justify-between">
+          <span class="text-xs text-white/55">累计生成</span>
+          <span class="w-7 h-7 rounded-lg bg-indigo-500/15 text-indigo-300 grid place-items-center ring-1 ring-indigo-400/20">
+            <Icon name="overview" class="w-3.5 h-3.5" />
+          </span>
+        </div>
+        <div class="text-2xl font-semibold tabular-nums mt-2">{{ fmtInt(lifetime.total || 0) }}</div>
+        <div class="text-[11px] mt-1 flex flex-wrap gap-x-2">
+          <span class="text-emerald-300 tabular-nums">{{ lifetime.success || 0 }} 成功</span>
+          <span v-if="lifetime.failed" class="text-rose-300 tabular-nums">{{ lifetime.failed }} 失败</span>
+        </div>
+        <div class="text-[10px] text-white/40 mt-1 tabular-nums">
+          API {{ lifetime.api || 0 }} · 图 {{ lifetime.image || 0 }} · 视 {{ lifetime.video || 0 }}
         </div>
       </div>
 
@@ -247,7 +267,7 @@ onUnmounted(() => clearInterval(timer))
       <div class="card p-4">
         <div class="text-xs text-white/55">活跃用户 · 24h</div>
         <div class="text-xl font-semibold tabular-nums mt-2">{{ fmtInt(dau) }}</div>
-        <div class="text-[11px] text-white/45 mt-1">近 7 天累计生成 {{ fmtInt(week.total) }}</div>
+        <div class="text-[11px] text-white/45 mt-1">近 3 天累计生成 {{ fmtInt(week.total) }}</div>
       </div>
     </div>
 
@@ -342,7 +362,7 @@ onUnmounted(() => clearInterval(timer))
         </div>
       </div>
 
-      <div class="card">
+      <div class="card flex flex-col">
         <div class="px-5 py-3 border-b border-white/[0.06] flex items-baseline justify-between">
           <h2 class="text-sm font-semibold">24 小时生成趋势</h2>
           <div class="text-[11px] text-white/45 flex items-center gap-3">
@@ -351,8 +371,8 @@ onUnmounted(() => clearInterval(timer))
             <span class="tabular-nums">峰值 {{ hourMax }}/h</span>
           </div>
         </div>
-        <div class="p-5">
-          <div class="flex items-end gap-[3px] h-32">
+        <div class="p-5 flex-1 flex flex-col">
+          <div class="flex items-end gap-[3px] flex-1 min-h-[8rem]">
             <div v-for="(b, i) in hourBuckets" :key="i"
                  class="group/bar relative flex-1 flex flex-col justify-end rounded-t overflow-visible"
                  :style="{ height: Math.max(4, ((b.image + b.video) / hourMax) * 100) + '%' }">
@@ -385,7 +405,7 @@ onUnmounted(() => clearInterval(timer))
         <button @click="range = 'week'"
                 class="px-3 py-1 rounded-md transition-colors"
                 :class="range === 'week' ? 'bg-white/10 text-white font-medium' : 'text-white/50 hover:text-white/80'">
-          近 7d
+          近 3d
         </button>
       </div>
     </div>
@@ -472,7 +492,7 @@ onUnmounted(() => clearInterval(timer))
             <div class="text-[11px] text-white/40 mt-1">{{ day.success }} 次成功生成</div>
           </div>
           <div>
-            <div class="text-xs text-white/55">近 7 天</div>
+            <div class="text-xs text-white/55">近 3 天</div>
             <div class="text-2xl font-semibold tabular-nums mt-1 text-amber-300">{{ fmtCredits(week.spent) }}</div>
             <div class="text-[11px] text-white/40 mt-1">{{ week.success }} 次成功生成</div>
           </div>

@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { api, generatedUrl } from '../api'
 import { fmtTs, fmtSize } from '../utils/format'
+import { copyText } from '../utils/clipboard'
 import Icon from '../components/Icon.vue'
 import MediaLightbox from '../components/MediaLightbox.vue'
 
@@ -40,12 +41,12 @@ function absUrl(name) {
 }
 
 async function copyLink(name) {
-  try {
-    await navigator.clipboard.writeText(absUrl(name))
-    flash('链接已复制')
-  } catch {
-    flash('复制失败')
-  }
+  flash(await copyText(absUrl(name)) ? '链接已复制' : '复制失败')
+}
+
+async function copyPrompt(f) {
+  if (!f.prompt) return
+  flash(await copyText(f.prompt) ? '指令已复制' : '复制失败')
 }
 
 let toastTimer = null
@@ -173,8 +174,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 
         <!-- caption: prompt (truncated 2 lines) + meta line -->
         <div class="absolute inset-x-0 bottom-0 p-3 pointer-events-none">
-          <div class="text-[12px] leading-tight text-white font-medium line-clamp-2 mb-1"
-               :title="f.prompt || f.name">
+          <div class="text-[12px] leading-tight text-white font-medium line-clamp-2 mb-1 transition-colors"
+               :class="f.prompt ? 'pointer-events-auto cursor-pointer hover:text-white/75' : ''"
+               :title="f.prompt ? '点击复制提示词' : f.name"
+               @click.stop="copyPrompt(f)">
             {{ f.prompt || f.name.split('/').pop() }}
           </div>
           <div class="text-[10px] text-white/55 flex items-center justify-between gap-2 tabular-nums">

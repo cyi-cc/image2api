@@ -15,6 +15,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -28,6 +29,32 @@ var (
 type Client struct{}
 
 func NewClient() *Client { return &Client{} }
+
+// sanitizeErr strips the upstream URL/host from a network error so a user's
+// private upstream URL never leaks into the event log / API response.
+func sanitizeErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	switch {
+	case strings.Contains(s, "context deadline exceeded"), strings.Contains(s, "Client.Timeout"), strings.Contains(s, "timeout"):
+		return "request timeout"
+	case strings.Contains(s, "connection refused"):
+		return "connection refused"
+	case strings.Contains(s, "no such host"), strings.Contains(s, "dial tcp"), strings.Contains(s, "lookup "):
+		return "cannot reach upstream"
+	case strings.Contains(s, "tls"), strings.Contains(s, "TLS"), strings.Contains(s, "certificate"):
+		return "TLS error"
+	case strings.Contains(s, "EOF"), strings.Contains(s, "reset by peer"), strings.Contains(s, "broken pipe"):
+		return "connection reset"
+	}
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return strings.ToLower(ue.Op) + " upstream failed"
+	}
+	return "upstream request failed"
+}
 
 func httpClient() *http.Client { return &http.Client{Timeout: 10 * time.Minute} }
 
@@ -82,7 +109,7 @@ func (c *Client) GenerateImage(ctx context.Context, baseURL, apiKey, model, prom
 
 	resp, err := httpClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrTemporaryUpstream, err)
+		return nil, fmt.Errorf("%w: %s", ErrTemporaryUpstream, sanitizeErr(err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
@@ -145,7 +172,7 @@ func (c *Client) GenerateVideo(ctx context.Context, baseURL, apiKey, model, prom
 		case "failed", "error", "canceled", "cancelled":
 			reason := stringValue(job["error"])
 			if isCreditError(reason) {
-				return nil, "", fmt.Errorf("%w: %s", ErrQuotaExhausted, clip([]byte(reason), 160))
+				return nil, "", fmt.Errorf("%w: %s", ErrTemporaryUpstream, clip([]byte(reason), 160))
 			}
 			return nil, "", fmt.Errorf("custom: video %s", clip([]byte(reason), 160))
 		}
@@ -171,7 +198,7 @@ func (c *Client) doJSON(ctx context.Context, method, url, apiKey string, body []
 	}
 	resp, err := httpClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrTemporaryUpstream, err)
+		return nil, fmt.Errorf("%w: %s", ErrTemporaryUpstream, sanitizeErr(err))
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(resp.Body)
@@ -194,7 +221,7 @@ func (c *Client) download(ctx context.Context, url, apiKey string) ([]byte, erro
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	resp, err := httpClient().Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrTemporaryUpstream, err)
+		return nil, fmt.Errorf("%w: %s", ErrTemporaryUpstream, sanitizeErr(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -234,7 +261,7 @@ func imageBytesFromResponse(ctx context.Context, body []byte) ([]byte, error) {
 		req, _ := http.NewRequestWithContext(ctx, http.MethodGet, d.URL, nil)
 		resp, err := httpClient().Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("%w: %v", ErrTemporaryUpstream, err)
+			return nil, fmt.Errorf("%w: %s", ErrTemporaryUpstream, sanitizeErr(err))
 		}
 		defer resp.Body.Close()
 		return io.ReadAll(resp.Body)
@@ -249,12 +276,14 @@ func mapStatus(status int, body []byte) error {
 	case status == 401 || status == 403:
 		return fmt.Errorf("%w: %d %s", ErrAuth, status, clip(body, 160))
 	case status == 429:
-		return fmt.Errorf("%w: 429 %s", ErrQuotaExhausted, clip(body, 160))
+		// Custom upstreams have NO "quota exhausted" lock — a 429 is just rate
+		// limiting, treated as a temporary error (fail over, account stays active).
+		return fmt.Errorf("%w: 429 %s", ErrTemporaryUpstream, clip(body, 160))
 	case status >= 500:
 		return fmt.Errorf("%w: %d %s", ErrTemporaryUpstream, status, clip(body, 160))
 	default:
 		if isCreditError(string(body)) {
-			return fmt.Errorf("%w: %s", ErrQuotaExhausted, clip(body, 160))
+			return fmt.Errorf("%w: %s", ErrTemporaryUpstream, clip(body, 160))
 		}
 		return fmt.Errorf("custom: %d %s", status, clip(body, 160))
 	}

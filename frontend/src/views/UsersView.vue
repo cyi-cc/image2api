@@ -20,7 +20,7 @@ const showAdd = ref(false)
 const editing = ref(null)
 const toast = ref('')
 
-const addForm = ref({ email: '', name: '', password: '', role: 'user', credits: 0 })
+const addForm = ref({ email: '', name: '', password: '', role: 'user', credits: 0, notes: '' })
 
 const STATUS_OPTIONS = [
   { value: 'active', label: '正常' },
@@ -100,7 +100,7 @@ async function createUser() {
   const r = await api('/users', jsonBody('POST', addForm.value))
   if (r.ok) {
     showAdd.value = false
-    addForm.value = { email: '', name: '', password: '', role: 'user', credits: 0 }
+    addForm.value = { email: '', name: '', password: '', role: 'user', credits: 0, notes: '' }
     flash('用户已创建')
     load()
   } else flash(r.data?.detail || '创建失败')
@@ -115,6 +115,7 @@ async function saveEdit() {
     status: u.status,
     credits: u.credits,
     role: u.role,
+    notes: u.notes || '',
   }
   if (u._newPassword) patch.password = u._newPassword
   const r = await api(`/users/${u.id}`, jsonBody('PATCH', patch))
@@ -244,6 +245,7 @@ async function quickCredits(u, delta) {
           <col class="w-9" />      <!-- select -->
           <col class="w-40" />     <!-- username -->
           <col />                  <!-- email (flex) -->
+          <col class="w-36" />     <!-- notes -->
           <col class="w-20" />     <!-- role -->
           <col class="w-16" />     <!-- status switch -->
           <col class="w-24" />     <!-- credits -->
@@ -261,6 +263,7 @@ async function quickCredits(u, delta) {
             </th>
             <th class="text-left px-5 py-3 font-medium">用户名</th>
             <th class="text-left px-3 py-3 font-medium">邮箱</th>
+            <th class="text-left px-3 py-3 font-medium">备注</th>
             <th class="text-left px-3 py-3 font-medium">角色</th>
             <th class="text-left px-3 py-3 font-medium">状态</th>
             <th class="text-right px-3 py-3 font-medium">积分</th>
@@ -283,6 +286,9 @@ async function quickCredits(u, delta) {
             </td>
             <td class="px-3 py-3.5 align-middle text-xs text-white/75 truncate" :title="u.email">
               {{ u.email || '—' }}
+            </td>
+            <td class="px-3 py-3.5 align-middle text-xs truncate" :class="u.notes ? 'text-white/70' : 'text-white/25'" :title="u.notes || ''">
+              {{ u.notes || '—' }}
             </td>
             <td class="px-3 py-3.5 align-middle">
               <span class="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-medium ring-1 whitespace-nowrap"
@@ -390,6 +396,10 @@ async function quickCredits(u, delta) {
             <label class="lbl">角色</label>
             <SelectMenu v-model="addForm.role" :options="ROLE_OPTIONS" />
           </div>
+          <div>
+            <label class="lbl">备注 <span class="text-white/35">(可选)</span></label>
+            <textarea v-model="addForm.notes" rows="2" class="field resize-none" placeholder="给该用户加个备注,仅管理员可见"></textarea>
+          </div>
           <div class="flex justify-end gap-2 pt-2">
             <button @click="showAdd = false" class="btn-soft">取消</button>
             <button @click="createUser" class="btn-primary">创建</button>
@@ -433,6 +443,10 @@ async function quickCredits(u, delta) {
           <div>
             <label class="lbl">积分</label>
             <input v-model.number="editing.credits" type="number" min="0" step="1" class="field" />
+          </div>
+          <div>
+            <label class="lbl">备注 <span class="text-white/35">(可选)</span></label>
+            <textarea v-model="editing.notes" rows="2" class="field resize-none" placeholder="给该用户加个备注,仅管理员可见"></textarea>
           </div>
           <div>
             <label class="lbl">重置密码 <span class="text-white/35">(留空保持不变)</span></label>

@@ -18,6 +18,7 @@ type SMTPConfig struct {
 	Password string
 	FromAddr string
 	UseTLS   bool
+	Subject  string // verification-code email subject (empty → default)
 }
 
 type SMTPService struct{}
@@ -35,7 +36,10 @@ func (s *SMTPService) SendCode(ctx context.Context, cfg SMTPConfig, to, code, pu
 	if purpose == "reset" {
 		action = "找回密码"
 	}
-	subject := "Vivid AI 邮箱验证码"
+	subject := strings.TrimSpace(cfg.Subject)
+	if subject == "" {
+		subject = "Vivid AI 邮箱验证码"
+	}
 	body := fmt.Sprintf("你正在进行%s，验证码为：%s\n\n验证码 6 分钟内有效。", action, code)
 	msg := buildSMTPMessage(cfg.FromAddr, to, subject, body)
 	addr := net.JoinHostPort(cfg.Host, strconv.Itoa(cfg.Port))

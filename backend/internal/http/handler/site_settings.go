@@ -17,18 +17,27 @@ func NewSiteSettingsHandler(site *service.SiteService) *SiteSettingsHandler {
 }
 
 func (h *SiteSettingsHandler) Get(c *gin.Context) {
-	title, err := h.site.Title(c.Request.Context())
+	ctx := c.Request.Context()
+	title, err := h.site.Title(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to load site settings"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"title": title, "contact": h.site.Contact(c.Request.Context())})
+	c.JSON(http.StatusOK, gin.H{
+		"title":    title,
+		"logo":     h.site.Logo(ctx),
+		"subtitle": h.site.Subtitle(ctx),
+		"contact":  h.site.Contact(ctx),
+	})
 }
 
 func (h *SiteSettingsHandler) Put(c *gin.Context) {
+	ctx := c.Request.Context()
 	var body struct {
-		Title   string          `json:"title"`
-		Contact service.Contact `json:"contact"`
+		Title    string          `json:"title"`
+		Logo     string          `json:"logo"`
+		Subtitle string          `json:"subtitle"`
+		Contact  service.Contact `json:"contact"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request body"})
@@ -39,14 +48,21 @@ func (h *SiteSettingsHandler) Put(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "网页主标题不能为空"})
 		return
 	}
-	updated, err := h.site.SetTitle(c.Request.Context(), title)
+	updated, err := h.site.SetTitle(ctx, title)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to save site settings"})
 		return
 	}
-	if err := h.site.SetContact(c.Request.Context(), body.Contact); err != nil {
+	if err := h.site.SetBranding(ctx, body.Logo, body.Subtitle); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to save branding"})
+		return
+	}
+	if err := h.site.SetContact(ctx, body.Contact); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to save contact info"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"ok": true, "data": gin.H{"title": updated, "contact": h.site.Contact(c.Request.Context())}})
+	c.JSON(http.StatusOK, gin.H{"ok": true, "data": gin.H{
+		"title": updated, "logo": h.site.Logo(ctx), "subtitle": h.site.Subtitle(ctx),
+		"contact": h.site.Contact(ctx),
+	}})
 }

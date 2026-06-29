@@ -10,7 +10,7 @@ const RATIO_OPTS = ['1:1', '16:9', '9:16', '4:3', '3:4', '21:9', '3:2', '5:4', '
 const IMG_RES = ['1K', '2K', '4K']
 const VID_RES = ['720p', '1080p', '2K', '4K']
 const ALL_RES = ['1K', '2K', '4K', '720p', '1080p']
-const DUR_OPTS = ['5s', '6s', '8s', '10s']
+const DUR_OPTS = ['5s', '6s', '8s', '10s', '15s']
 
 const id = ref('')
 const type = ref('image')
@@ -21,8 +21,29 @@ const weight = ref(0)
 // tier -> { price, agent } — blank price means the tier is NOT supported.
 const res = ref(Object.fromEntries(ALL_RES.map((r) => [r, { price: '', agent: '' }])))
 const dur = ref(Object.fromEntries(DUR_OPTS.map((d) => [d, { price: '', agent: '' }])))
+// Duration rows shown: the presets above + any custom seconds the admin adds.
+const durList = ref([...DUR_OPTS])
+const customDurInput = ref('')
 const error = ref('')
 const saving = ref(false)
+
+// Add a custom duration (any positive integer seconds, e.g. 12 → "12s").
+function addCustomDur() {
+  const n = parseInt(customDurInput.value, 10)
+  if (!(n > 0)) return
+  const key = n + 's'
+  if (!durList.value.includes(key)) {
+    if (!dur.value[key]) dur.value[key] = { price: '', agent: '' }
+    durList.value.push(key)
+  }
+  customDurInput.value = ''
+}
+// Custom (non-preset) durations can be removed; presets stay.
+function removeDur(key) {
+  if (DUR_OPTS.includes(key)) return
+  durList.value = durList.value.filter((k) => k !== key)
+  delete dur.value[key]
+}
 
 const isVideo = computed(() => type.value === 'video')
 // Resolution tiers depend on type: image = 1K/2K/4K, video = 540p/720p/1080p/2K/4K.
@@ -145,11 +166,21 @@ async function save() {
         <div v-if="isVideo">
           <label class="text-xs text-slate-500 block mb-1.5">时长 · 价格(总价 = 分辨率价 + 时长价;<strong class="text-slate-600">留空 = 不支持</strong>)</label>
           <div class="space-y-1.5">
-            <div v-for="d in DUR_OPTS" :key="d" class="flex items-center gap-2">
+            <div v-for="d in durList" :key="d" class="flex items-center gap-2">
               <span class="w-16 text-xs font-mono text-slate-500">{{ d }}</span>
               <input v-model="dur[d].price" type="number" class="field !py-1 flex-1" placeholder="普通价(留空=不支持)" />
               <input v-model="dur[d].agent" type="number" class="field !py-1 flex-1" placeholder="代理价(留空跟随)" />
+              <button v-if="!DUR_OPTS.includes(d)" type="button" @click="removeDur(d)"
+                      class="shrink-0 w-7 h-7 grid place-items-center rounded text-slate-400 hover:text-rose-500 hover:bg-rose-50" title="删除该时长">
+                <Icon name="close" class="w-3.5 h-3.5" />
+              </button>
             </div>
+          </div>
+          <!-- 自定义时长:输入任意秒数,Sora 类上游支持的任意时长都能加 -->
+          <div class="flex items-center gap-2 mt-2">
+            <input v-model="customDurInput" type="number" min="1" @keydown.enter.prevent="addCustomDur"
+                   class="field !py-1 w-32" placeholder="自定义秒数" />
+            <button type="button" @click="addCustomDur" class="btn-soft text-xs whitespace-nowrap">+ 添加时长</button>
           </div>
         </div>
 

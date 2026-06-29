@@ -41,19 +41,12 @@ func (s *AdminReadService) Users(ctx context.Context) ([]model.User, map[string]
 	if err != nil {
 		return nil, nil, err
 	}
-	counts, err := s.events.UserSuccessCounts(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	for i := range users {
-		meta := users[i].Notes
-		_ = meta
-	}
 	stats, err := s.users.Stats(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	stats["generation_counts"] = counts
+	// Per-user generation count now comes from the persistent users.generation_count
+	// column (set in the handler from each user object), not a log COUNT.
 	return users, stats, nil
 }
 
@@ -63,10 +56,6 @@ func (s *AdminReadService) Models(ctx context.Context) ([]model.ModelConfig, err
 
 func (s *AdminReadService) ModelsView(ctx context.Context) ([]map[string]any, error) {
 	items, err := s.models.List(ctx)
-	if err != nil {
-		return nil, err
-	}
-	counts, err := s.events.ModelSuccessCounts(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +78,7 @@ func (s *AdminReadService) ModelsView(ctx context.Context) ([]map[string]any, er
 			"max_reference_images": item.MaxReferenceImages,
 			"reference_mode":       item.ReferenceMode,
 			"weight":               item.Weight,
-			"generation_count":     counts[item.ID],
+			"generation_count":     item.GenerationCount,
 			"created_at":           item.CreatedAt,
 			"updated_at":           item.UpdatedAt,
 		})
@@ -97,12 +86,13 @@ func (s *AdminReadService) ModelsView(ctx context.Context) ([]map[string]any, er
 	return out, nil
 }
 
-func (s *AdminReadService) Logs(ctx context.Context, limit, offset int, kind, status string, since *time.Time, userID, excludeSource, source string, hasFile bool) ([]model.EventLog, int64, *repo.EventStats, error) {
+func (s *AdminReadService) Logs(ctx context.Context, limit, offset int, kind, status string, statuses []string, since *time.Time, userID, excludeSource, source string, hasFile bool) ([]model.EventLog, int64, *repo.EventStats, error) {
 	items, total, err := s.events.List(ctx, repo.EventListFilter{
 		Limit:         limit,
 		Offset:        offset,
 		Kind:          kind,
 		Status:        status,
+		Statuses:      statuses,
 		Since:         since,
 		UserID:        userID,
 		ExcludeSource: excludeSource,
@@ -173,7 +163,7 @@ func (s *AdminReadService) Stats(ctx context.Context) (map[string]any, error) {
 func (s *AdminReadService) Dashboard(ctx context.Context) (map[string]any, error) {
 	now := time.Now()
 	dayCut := now.Add(-24 * time.Hour)
-	weekCut := now.Add(-7 * 24 * time.Hour)
+	weekCut := now.Add(-3 * 24 * time.Hour) // "week" key = last 3 days (per admin request)
 
 	day, err := s.events.WindowStats(ctx, dayCut)
 	if err != nil {
@@ -196,6 +186,12 @@ func (s *AdminReadService) Dashboard(ctx context.Context) (map[string]any, error
 		return nil, err
 	}
 	hourly, err := s.events.HourlyBuckets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// All-time persistent counters (total/success/failed/image/video/api) — these
+	// survive log retention/clearing, unlike the windowed day/week stats.
+	lifetime, err := s.events.Counters(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -263,6 +259,7 @@ func (s *AdminReadService) Dashboard(ctx context.Context) (map[string]any, error
 		"dau":            dau,
 		"wau":            wau,
 		"hourly":         hourly,
+		"lifetime":       lifetime,
 		"analytics": map[string]any{
 			"day":  dayAnalytics,
 			"week": weekAnalytics,

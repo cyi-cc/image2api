@@ -26,16 +26,11 @@ func (h *AdminReadHandler) Users(c *gin.Context) {
 	}
 
 	out := make([]gin.H, 0, len(users))
-	generationCounts := map[string]int64{}
-	if raw, ok := stats["generation_counts"].(map[string]int64); ok {
-		generationCounts = raw
-	}
 	for _, user := range users {
 		row := userPublic(user)
-		row["generation_count"] = generationCounts[user.ID]
+		row["generation_count"] = user.GenerationCount
 		out = append(out, row)
 	}
-	delete(stats, "generation_counts")
 	c.JSON(http.StatusOK, gin.H{"data": out, "stats": stats})
 }
 
@@ -61,7 +56,7 @@ func (h *AdminReadHandler) Logs(c *gin.Context) {
 		}
 	}
 
-	items, total, stats, err := h.admin.Logs(c.Request.Context(), limit, offset, kind, status, since, "", "", c.Query("source"), false)
+	items, total, stats, err := h.admin.Logs(c.Request.Context(), limit, offset, kind, status, nil, since, "", "", c.Query("source"), false)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to load logs"})
 		return
