@@ -151,7 +151,7 @@ curl https://你的域名/v1/images/edits \
 
 > 域名 + HTTPS 由你自己的反向代理处理(本项目不内置证书签发)。
 
-**Docker(推荐)**:`docker compose up -d --build` 一条命令拉起 PostgreSQL + Redis + RustFS + 后端 + 前端(nginx **HTTP 监听容器 2000 端口**),把你的反向代理指到 `http://<本机>:2000`(端口用 `WEB_PORT` 改;要自定义密码 / 密钥 / `CORS_ORIGINS` 就在 compose 同目录建 `.env` 配,反代走 HTTPS 时设 `COOKIE_SECURE=true`)。
+**Docker(推荐)**:`docker compose up -d --build` 一条命令拉起 PostgreSQL + Redis + RustFS + 后端 + 前端(nginx **HTTP 监听容器 2000 端口**),把你的反向代理指到 `http://<本机>:2000`(端口用 `WEB_PORT` 改;要改密码 / 密钥 / `CORS_ORIGINS`(反代走 HTTPS 时把 `COOKIE_SECURE` 设为 `true`),直接改 `docker-compose.yml` 里对应值即可)。
 
 也可**从源码手动构建**,自备 **PostgreSQL · Redis · RustFS(或任意 S3)· 反向代理**:
 

@@ -143,7 +143,7 @@ Images return OpenAI-style `{ "created": ..., "data": [{ "b64_json": "..." }] }`
 
 > Domain + HTTPS are handled by your own reverse proxy (this project issues no certificates).
 
-**Docker (recommended)**: `docker compose up -d --build` brings up PostgreSQL + Redis + RustFS + backend + frontend (nginx serving **HTTP on container port 2000**); point your reverse proxy at `http://<host>:2000` (port via `WEB_PORT`; set passwords / keys / `CORS_ORIGINS` in a `.env` beside the compose file, `COOKIE_SECURE=true` when your proxy serves HTTPS).
+**Docker (recommended)**: `docker compose up -d --build` brings up PostgreSQL + Redis + RustFS + backend + frontend (nginx serving **HTTP on container port 2000**); point your reverse proxy at `http://<host>:2000` (port via `WEB_PORT`; edit the values (passwords / keys / `CORS_ORIGINS`, and `COOKIE_SECURE=true` when your proxy serves HTTPS) directly in `docker-compose.yml`).
 
 Or **build from source** — bring your own **PostgreSQL · Redis · RustFS (or any S3) · reverse proxy**:
 

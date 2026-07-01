@@ -1,17 +1,17 @@
 # image2api — one-command stack: PostgreSQL + Redis + RustFS (S3) + backend
-# (pre-built binary) + frontend/nginx (built here, HTTP only on port 2000).
-# TLS + domain are NOT handled here — put your own reverse proxy in front of the
-# web container (host port ${WEB_PORT:-2000}) and terminate TLS there.
-#   1) cp .env.docker.example .env   # 填 密码 / 密钥 / CORS_ORIGINS
-#   2) docker compose up -d --build
-# Then point your reverse proxy at http://<host>:${WEB_PORT:-2000}.
+# (built from source) + frontend/nginx (HTTP only on port 2000). Self-contained:
+#   docker compose up -d --build
+# No .env needed — all values are inline below. TLS + domain are handled by YOUR
+# OWN reverse proxy in front of the web container (host port 2000).
+# ⚠ Before exposing to production, change the passwords/keys (POSTGRES_PASSWORD,
+#   RUSTFS_ACCESS_KEY/SECRET_KEY) and set CORS_ORIGINS to your real site origin.
 services:
   postgres:
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: vivid_ai
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-postgres}
+      POSTGRES_PASSWORD: change-me-postgres
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -39,8 +39,8 @@ services:
   rustfs:
     image: rustfs/rustfs:latest
     environment:
-      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-vividai}
-      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:-vividai-secret-change-me}
+      RUSTFS_ACCESS_KEY: vividai
+      RUSTFS_SECRET_KEY: vividai-secret-change-me
       RUSTFS_ADDRESS: ":9000"
       RUSTFS_VOLUMES: /data
     volumes:
@@ -55,10 +55,10 @@ services:
       - rustfs
     entrypoint: >
       /bin/sh -c "
-      until mc alias set s3 http://rustfs:9000 ${S3_ACCESS_KEY:-vividai} ${S3_SECRET_KEY:-vividai-secret-change-me}; do
+      until mc alias set s3 http://rustfs:9000 vividai vividai-secret-change-me; do
         echo 'waiting for rustfs...'; sleep 2;
       done;
-      mc mb -p s3/${S3_BUCKET:-vivid-ai} || true;
+      mc mb -p s3/vivid-ai || true;
       echo 'bucket ready';
       "
     restart: "no"
@@ -68,20 +68,20 @@ services:
       context: ./backend
     environment:
       APP_ENV: production
-      APP_TITLE: ${APP_TITLE:-image2api}
+      APP_TITLE: image2api
       HTTP_ADDR: 0.0.0.0:6666
-      POSTGRES_DSN: host=postgres user=postgres password=${POSTGRES_PASSWORD:-change-me-postgres} dbname=vivid_ai port=5432 sslmode=disable TimeZone=Asia/Shanghai
+      POSTGRES_DSN: host=postgres user=postgres password=change-me-postgres dbname=vivid_ai port=5432 sslmode=disable TimeZone=Asia/Shanghai
       REDIS_ADDR: redis:6379
       REDIS_PASSWORD: ""
       REDIS_DB: "0"
       RUSTFS_ENDPOINT: http://rustfs:9000
-      RUSTFS_BUCKET: ${S3_BUCKET:-vivid-ai}
-      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-vividai}
-      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:-vividai-secret-change-me}
-      # Your site origin(s), comma-separated (the URL your reverse proxy serves).
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:2000}
-      # Keep true only if your reverse proxy serves HTTPS; false for plain HTTP.
-      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      RUSTFS_BUCKET: vivid-ai
+      RUSTFS_ACCESS_KEY: vividai
+      RUSTFS_SECRET_KEY: vividai-secret-change-me
+      # Set to the URL your reverse proxy serves the site on (comma-separated).
+      CORS_ORIGINS: http://localhost:2000
+      # true only if your reverse proxy serves HTTPS; false for plain HTTP.
+      COOKIE_SECURE: "false"
     volumes:
       - generated:/app/data/generated
     depends_on:
@@ -102,9 +102,9 @@ services:
     build:
       context: ./frontend
     # nginx serves the SPA + proxies the API on container port 2000 (HTTP only).
-    # Point your own reverse proxy at host:${WEB_PORT:-2000}.
+    # Point your own reverse proxy at host:2000.
     ports:
-      - "${WEB_PORT:-2000}:2000"
+      - "2000:2000"
     depends_on:
       - backend
     restart: unless-stopped
