@@ -4,6 +4,7 @@ import { api, jsonBody } from '../api'
 import { fmtTs, fmtIso, fmtDate, fmtClock } from '../utils/format'
 import ImportModal from '../components/ImportModal.vue'
 import UpstreamModal from '../components/UpstreamModal.vue'
+import AccountEditModal from '../components/AccountEditModal.vue'
 import Icon from '../components/Icon.vue'
 
 const rows = ref([])
@@ -13,6 +14,15 @@ const showImport = ref(false)
 const showUpstream = ref(false)
 const editingUpstream = ref(null)
 function editUpstream(a) { editingUpstream.value = a; showUpstream.value = true }
+const editingAccount = ref(null)
+function editAccount(a) { editingAccount.value = a }
+// Reflect the saved values in the table without a full reload.
+function applyEdit(payload) {
+  const row = editingAccount.value
+  if (!row) return
+  if (payload.weight != null) row.weight = payload.weight
+  if (payload.concurrency != null) row.concurrency = payload.concurrency
+}
 
 const typeFilter = ref('')      // '' | 'openai' | 'adobe' | 'runway' | 'leonardo'
 const statusFilter = ref('')    // '' | 'active' | 'quota' | 'disabled'
@@ -100,13 +110,6 @@ const pageNumbers = computed(() => {
 })
 
 let pendingTimer = null
-
-// Inline-edit an account field (weight / concurrency) → PATCH /tokens/{pool}/{id}.
-async function saveField(row, field, value) {
-  const v = Number(value)
-  if (Number.isNaN(v)) return
-  await api(`/tokens/${row.pool}/${row.id}`, jsonBody('PATCH', { [field]: v }))
-}
 
 async function loadAccounts() {
   loading.value = true
@@ -463,19 +466,14 @@ onMounted(loadAccounts)
                     :class="a.remaining > 0 ? 'text-emerald-300' : 'text-rose-300'">{{ a.remaining }}{{ a.type === 'grok' ? '%' : '' }}</span>
               <span v-else class="text-white/25" :title="a._quotaError || ''">—</span>
             </td>
-            <!-- weight (editable, all accounts) -->
-            <td class="px-3 py-3.5 align-middle text-center whitespace-nowrap">
-              <input type="number" :value="a.weight" @change="saveField(a, 'weight', $event.target.value)"
-                     class="w-12 bg-white/5 border border-white/10 rounded px-1 py-0.5 text-xs text-center tabular-nums focus:border-indigo-400 outline-none"
-                     title="权重(高的优先)" />
+            <!-- weight (edit via modal) -->
+            <td class="px-3 py-3.5 align-middle text-center whitespace-nowrap text-xs tabular-nums text-white/70">
+              {{ a.weight ?? 0 }}
             </td>
-            <!-- concurrency (editable only for custom upstreams; others = system fixed) -->
-            <td class="px-3 py-3.5 align-middle text-center whitespace-nowrap">
-              <input v-if="a.type === 'custom'" type="number" min="1" :value="a.concurrency || 1"
-                     @change="saveField(a, 'concurrency', $event.target.value)"
-                     class="w-12 bg-white/5 border border-white/10 rounded px-1 py-0.5 text-xs text-center tabular-nums focus:border-indigo-400 outline-none"
-                     title="并发数(仅上游可设)" />
-              <span v-else class="text-white/25 text-xs" title="系统固定">{{ a.type === 'grok' ? 10 : 1 }}</span>
+            <!-- concurrency (custom = configured value; others = system fixed) -->
+            <td class="px-3 py-3.5 align-middle text-center whitespace-nowrap text-xs tabular-nums">
+              <span v-if="a.type === 'custom'" class="text-white/70">{{ a.concurrency || 1 }}</span>
+              <span v-else class="text-white/25" title="系统固定">{{ a.type === 'grok' ? 10 : 1 }}</span>
             </td>
             <!-- reset_after -->
             <td class="px-3 py-3.5 align-middle text-xs whitespace-nowrap">
@@ -528,6 +526,9 @@ onMounted(loadAccounts)
             <!-- actions -->
             <td class="px-3 py-3.5 align-middle whitespace-nowrap">
               <div class="flex items-center justify-end gap-2">
+                <button v-if="a.type !== 'custom'" @click="editAccount(a)" class="act" title="编辑">
+                  <Icon name="config" class="w-3.5 h-3.5" />
+                </button>
                 <button v-if="a.type === 'custom'" @click="editUpstream(a)" class="act" title="编辑上游">
                   <Icon name="config" class="w-3.5 h-3.5" />
                 </button>
@@ -558,6 +559,7 @@ onMounted(loadAccounts)
 
     <ImportModal v-if="showImport" @close="showImport = false" @imported="loadAccounts" />
     <UpstreamModal v-if="showUpstream" :account="editingUpstream" @close="showUpstream = false; editingUpstream = null" @imported="loadAccounts" />
+    <AccountEditModal v-if="editingAccount" :account="editingAccount" @saved="applyEdit" @close="editingAccount = null" />
   </section>
 </template>
 

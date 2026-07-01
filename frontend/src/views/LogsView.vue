@@ -303,7 +303,6 @@ const sourcePill = (s) => ({
               <div v-if="e.error" class="mt-1 text-[11px] text-rose-300/85 truncate flex items-center gap-1.5 cursor-pointer hover:text-rose-200 transition-colors"
                    :title="e.error + ' — 点击复制'"
                    @click.stop="copyError(e)">
-                <Icon name="copy" class="w-3 h-3 shrink-0" />
                 {{ e.error }}
               </div>
             </td>
