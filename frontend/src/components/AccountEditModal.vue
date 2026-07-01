@@ -72,3 +72,21 @@ async function submit() {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* mirror the 用户管理 edit modal so the two are visually identical */
+.lbl {
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: rgb(255 255 255 / 0.55);
+  margin-bottom: 0.4rem;
+}
+/* disabled inputs — readable, but visually 'cool' so the admin knows they
+   can't change them (matches UsersView). */
+.field:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+  background: rgb(255 255 255 / 0.025);
+}
+</style>

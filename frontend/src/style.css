@@ -415,6 +415,15 @@ button:not(:disabled), [role="button"]:not([aria-disabled="true"]) { cursor: poi
   }
   select.field::-ms-expand { display: none; }
 
+  /* Number inputs using .field: hide the native +/- spinner arrows for a
+     cleaner look (value is still typeable / editable). */
+  input.field[type='number'] { -moz-appearance: textfield; appearance: textfield; }
+  input.field[type='number']::-webkit-outer-spin-button,
+  input.field[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+
   /* status pill */
   .pill { @apply inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium; }
 

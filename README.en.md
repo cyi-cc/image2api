@@ -57,11 +57,28 @@ It's more than an API proxy: it ships with **credit billing, CDK top-ups, referr
 
 ## 🖼️ Screenshots
 
-| Playground | Dashboard |
-|:---:|:---:|
-| ![Playground](docs/screenshots/playground.png) | ![Dashboard](docs/screenshots/dashboard.png) |
-| **Accounts** | **Logs** |
-| ![Accounts](docs/screenshots/accounts.png) | ![Logs](docs/screenshots/logs.png) |
+<div align="center">
+<sub>🎨 Modern generation frontend · light / dark admin console · data-driven ops dashboard</sub>
+</div>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/dashboard.png" alt="Dashboard" /></td>
+    <td width="50%"><img src="docs/screenshots/models.png" alt="Models" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>📊 Dashboard</b><br/><sub>Users / volume / provider health / 24h trend</sub></td>
+    <td align="center"><b>🧩 Model management</b><br/><sub>Per-model capabilities, pricing & weight</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/accounts.png" alt="Accounts" /></td>
+    <td width="50%"><img src="docs/screenshots/logs.png" alt="Logs" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>🔑 Account pools</b><br/><sub>Multi-account pools · weight / concurrency · CRUD</sub></td>
+    <td align="center"><b>📜 Call logs</b><br/><sub>Success / failure / in-progress · prompts & latency</sub></td>
+  </tr>
+</table>
 
 ## 🚀 Features
 
