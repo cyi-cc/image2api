@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"regexp"
 	"strings"
 
@@ -66,50 +67,82 @@ func (c *Client) GenerateVideo(ctx context.Context, token, prompt, aspectRatio, 
 		imageRefs = append(imageRefs, url)
 	}
 
-	postID, err := c.createPost(ctx, client, token, prompt)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	videoCfg := map[string]any{
-		"parentPostId":       postID,
-		"aspectRatio":        aspectRatio,
-		"videoLength":        seconds,
-		"resolutionName":     resolution,
-		"isReferenceToVideo": len(imageRefs) > 0,
-	}
-	if len(imageRefs) > 0 {
-		videoCfg["imageReferences"] = imageRefs
-	}
-	payload := map[string]any{
-		"temporary":        true,
-		"modelName":        "imagine-video-gen",
-		"message":          prompt + " --mode=custom",
-		"enableSideBySide": true,
-		"responseMetadata": map[string]any{
-			"modelConfigOverride": map[string]any{
-				"modelMap": map[string]any{"videoGenModelConfig": videoCfg},
-			},
-		},
-	}
-
-	body, err := c.postStream(ctx, client, token, "/rest/app-chat/conversations/new", payload)
-	if err != nil {
-		return nil, nil, err
-	}
-	// Out-of-credits surfaces as a stream error (HTTP is still 200).
-	if strings.Contains(body, "usagePoolExhausted") || strings.Contains(body, "media generation credits") {
-		return nil, nil, fmt.Errorf("%w: media generation credits exhausted", ErrQuotaExhausted)
-	}
-	// The artifact path appears as "videoUrl":"users/.../generated_video.mp4".
-	var artifact string
-	for _, m := range videoURLRe.FindAllStringSubmatch(body, -1) {
-		if v := strings.TrimSpace(m[1]); v != "" {
-			artifact = v // keep the last (progress=100) one
+	// grok occasionally accepts the conversation (HTTP 200) but closes the stream
+	// after only the conversation object — no progress events, no videoUrl. This
+	// is transient, so retry the whole create-post + stream a few times before
+	// giving up. Real out-of-credits / auth errors are returned immediately.
+	const maxAttempts = 3
+	var (
+		postID   string
+		artifact string
+		lastBody string
+		lastErr  error
+	)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return nil, nil, ctx.Err()
 		}
+		pid, cpErr := c.createPost(ctx, client, token, prompt)
+		if cpErr != nil {
+			lastErr = cpErr
+			continue
+		}
+		postID = pid
+
+		videoCfg := map[string]any{
+			"parentPostId":       postID,
+			"aspectRatio":        aspectRatio,
+			"videoLength":        seconds,
+			"resolutionName":     resolution,
+			"isReferenceToVideo": len(imageRefs) > 0,
+		}
+		if len(imageRefs) > 0 {
+			videoCfg["imageReferences"] = imageRefs
+		}
+		payload := map[string]any{
+			"temporary":        true,
+			"modelName":        "imagine-video-gen",
+			"message":          prompt + " --mode=custom",
+			"enableSideBySide": true,
+			"responseMetadata": map[string]any{
+				"modelConfigOverride": map[string]any{
+					"modelMap": map[string]any{"videoGenModelConfig": videoCfg},
+				},
+			},
+		}
+
+		body, psErr := c.postStream(ctx, client, token, "/rest/app-chat/conversations/new", payload)
+		if psErr != nil {
+			// Transient HTTP/2 stream resets etc. — retry.
+			lastErr = psErr
+			continue
+		}
+		if dir := strings.TrimSpace(os.Getenv("GROK_DUMP")); dir != "" {
+			_ = os.WriteFile(dir+"/grok_body_"+postID+".txt", []byte(body), 0o644)
+		}
+		// Out-of-credits surfaces as a stream error (HTTP is still 200) — not retryable.
+		if strings.Contains(body, "usagePoolExhausted") || strings.Contains(body, "media generation credits") {
+			return nil, nil, fmt.Errorf("%w: media generation credits exhausted", ErrQuotaExhausted)
+		}
+		// The artifact path appears as "videoUrl":"users/.../generated_video.mp4".
+		lastBody = body
+		artifact = ""
+		for _, m := range videoURLRe.FindAllStringSubmatch(body, -1) {
+			if v := strings.TrimSpace(m[1]); v != "" {
+				artifact = v // keep the last (progress=100) one
+			}
+		}
+		if artifact != "" {
+			break
+		}
+		// No artifact: grok closed the stream early. Retry.
+		lastErr = nil
 	}
 	if artifact == "" {
-		return nil, nil, fmt.Errorf("%w: no video artifact in response: %s", ErrTemporaryUpstream, clip([]byte(body), 200))
+		if lastErr != nil {
+			return nil, nil, lastErr
+		}
+		return nil, nil, fmt.Errorf("%w: no video artifact in response: %s", ErrTemporaryUpstream, clip([]byte(lastBody), 200))
 	}
 	fullURL := artifact
 	if !strings.HasPrefix(fullURL, "http") {
