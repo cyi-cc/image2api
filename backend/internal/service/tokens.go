@@ -867,6 +867,9 @@ func (s *TokenService) ImportGrokToken(ctx context.Context, ssoToken, tokenID st
 	email := ""
 	if s.grok != nil {
 		s.applyProxy(ctx)
+		// Best-effort email resolution. A dead/blocked probe must NOT block import:
+		// land the account and let the async checkPendingGrok disable it if the
+		// session is truly dead. Empty email just falls back to the session id.
 		if e, _, ferr := s.grok.FetchSession(ctx, ssoToken); ferr == nil {
 			email = e
 		}
@@ -923,6 +926,17 @@ func (s *TokenService) checkPendingGrok(tokenID, ssoToken string) {
 		return
 	}
 	s.applyProxy(ctx)
+	// Validate the session first: a dead sso answers 200 {"status":"unauthenticated"},
+	// which FetchSession now maps to ErrAuth → disable. Also backfill the email if
+	// import couldn't resolve it (empty account_email currently shows the session id).
+	if email, _, serr := s.grok.FetchSession(ctx, ssoToken); serr != nil {
+		if errors.Is(serr, grok.ErrAuth) {
+			s.finishPending(ctx, "grok", tokenID, "disabled", true, nil)
+			return
+		}
+	} else if strings.TrimSpace(email) != "" {
+		_, _ = s.tokens.Update(ctx, "grok", tokenID, map[string]any{"account_email": strings.TrimSpace(email)})
+	}
 	data, err := s.grok.FetchCreditsBalance(ctx, ssoToken)
 	if err != nil {
 		if errors.Is(err, grok.ErrAuth) {

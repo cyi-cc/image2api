@@ -142,7 +142,7 @@ func (c *Client) FetchCreditsBalance(ctx context.Context, token string) (map[str
 
 	// GetGrokCreditsConfig field #1 is the credits USED this period (not remaining):
 	// an exhausted account reads 100, a fresh one reads ~0. Remaining = 100 - used.
-	used, reset, ok := parseCreditsConfig(raw)
+	used, _, ok := parseCreditsConfig(raw)
 	if !ok {
 		return unknownBalance("unparsable credits config"), nil
 	}
@@ -154,11 +154,13 @@ func (c *Client) FetchCreditsBalance(ctx context.Context, token string) (map[str
 	}
 	remaining := fullCredits - used
 
-	// 恢复时间: prefer the subscription's billing-period end (when the plan renews
-	// and credits reset) over the credits-config timestamp. Free accounts have no
-	// subscription, so this falls back to the credits-config reset above.
+	// 恢复时间: taken solely from the subscription's billing-period end (when the
+	// plan renews and credits reset). The credits-config weekly reset timestamp is
+	// intentionally NOT used as a fallback — an account with no active subscription
+	// has no recovery time.
+	reset := ""
 	sub, _ := c.FetchSubscription(ctx, token)
-	if sub != nil && strings.TrimSpace(sub.BillingPeriodEnd) != "" {
+	if sub != nil {
 		reset = strings.TrimSpace(sub.BillingPeriodEnd)
 	}
 	return map[string]any{
@@ -273,6 +275,7 @@ func (c *Client) FetchSession(ctx context.Context, token string) (email, userID 
 		return "", "", fmt.Errorf("%w: session http %d", ErrTemporaryUpstream, resp.StatusCode)
 	}
 	var body struct {
+		Status  string `json:"status"`
 		Session struct {
 			Email  string `json:"email"`
 			UserID string `json:"userId"`
@@ -280,6 +283,10 @@ func (c *Client) FetchSession(ctx context.Context, token string) (email, userID 
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
 		return "", "", fmt.Errorf("%w: session non-json", ErrTemporaryUpstream)
+	}
+	// A dead sso cookie answers 200 {"status":"unauthenticated"} rather than 401.
+	if !strings.EqualFold(body.Status, "authenticated") {
+		return "", "", ErrAuth
 	}
 	return strings.TrimSpace(body.Session.Email), strings.TrimSpace(body.Session.UserID), nil
 }
