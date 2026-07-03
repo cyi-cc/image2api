@@ -140,7 +140,14 @@ func (c *Client) GenerateVideo(ctx context.Context, token, prompt, aspectRatio, 
 		if artifact != "" {
 			break
 		}
-		// No artifact: grok closed the stream early. Retry.
+		// A fatal stream error means grok definitively rejected this generation
+		// (content moderation, an unsupported parameter, etc.). Retrying — on this
+		// or any other account — fails identically and only burns the pool, so fail
+		// fast with a non-temporary error the pool won't fail over on.
+		if strings.Contains(body, "STREAM_ERROR_SEVERITY_FATAL") {
+			return nil, nil, fmt.Errorf("grok: video generation rejected by upstream (fatal stream error): %s", clip([]byte(body), 200))
+		}
+		// No artifact and no fatal error: grok closed the stream early. Retry.
 		lastErr = nil
 	}
 	if artifact == "" {

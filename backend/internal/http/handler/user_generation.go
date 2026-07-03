@@ -458,7 +458,7 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"type":                 "video",
 			"ratios":               []string{"2:3", "3:2", "1:1", "9:16", "16:9"},
 			"resolutions":          []string{"720p"},
-			"durations":            []string{"6s", "10s", "15s"},
+			"durations":            []string{"6s", "10s"},
 			"max_reference_images": 6,
 			"reference_mode":       "asset",
 			"description":          "Grok Imagine video (文/图生视频)",
