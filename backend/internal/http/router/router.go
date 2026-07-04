@@ -28,6 +28,7 @@ type Handlers struct {
 	ConcGroups    *handler.ConcurrencyGroupHandler
 	Announcement  *handler.AnnouncementHandler
 	Payment       *handler.PaymentHandler
+	BannedWords   *handler.BannedWordsHandler
 }
 
 func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.Engine {
@@ -87,6 +88,7 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 		userAuthed.POST("/test", handlers.UserGen.Test)
 		userAuthed.GET("/jobs/mine", handlers.UserGen.MyJobs)
 		userAuthed.GET("/my-images", handlers.UserGen.MyImages)
+		userAuthed.DELETE("/my-files", handlers.UserGen.DeleteMyFile)
 		userAuthed.GET("/announcement", handlers.Announcement.Get)
 		userAuthed.POST("/announcement/seen", handlers.Announcement.MarkSeen)
 		userAuthed.GET("/pay/config", handlers.Payment.Config)
@@ -137,6 +139,10 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 		authed.GET("/accounts/:pool/:id/email", handlers.ProviderAdmin.AccountEmail)
 		authed.GET("/providers", handlers.AdminRead.Providers)
 		authed.GET("/images", handlers.AdminRead.Images)
+		authed.DELETE("/images", handlers.AdminRead.DeleteImage)
+		authed.GET("/banned-words", handlers.BannedWords.List)
+		authed.POST("/banned-words", handlers.BannedWords.Create)
+		authed.DELETE("/banned-words/:id", handlers.BannedWords.Delete)
 		authed.GET("/refresh/profiles", handlers.ProviderAdmin.RefreshProfiles)
 		authed.POST("/refresh/profiles/:profile_id/refresh-now", handlers.ProviderAdmin.RefreshNow)
 		authed.PATCH("/refresh/profiles/:profile_id", handlers.ProviderAdmin.RefreshUpdate)

@@ -38,6 +38,22 @@ func (h *UserGenerationHandler) MyImages(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"data": items})
 }
 
+// DeleteMyFile removes ONE of the caller's own generated files (plus its
+// thumbnail) and blanks the log rows referencing it, so the 画图台 grid and
+// 创作记录 gallery stop showing it. ?file= is the storage key (owner/name).
+func (h *UserGenerationHandler) DeleteMyFile(c *gin.Context) {
+	user := currentUser(c)
+	if user == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"detail": "未登录或会话已过期"})
+		return
+	}
+	if err := h.admin.DeleteOwnedFile(c.Request.Context(), service.OwnerDir(user), c.Query("file")); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
 func (h *UserGenerationHandler) Generate(c *gin.Context) {
 	user := currentUser(c)
 	if user == nil {
@@ -70,7 +86,7 @@ func (h *UserGenerationHandler) Generate(c *gin.Context) {
 		switch {
 		case errors.Is(err, service.ErrUnknownModel):
 			c.JSON(http.StatusNotFound, gin.H{"detail": err.Error()})
-		case errors.Is(err, service.ErrUnsupportedParams):
+		case errors.Is(err, service.ErrUnsupportedParams), errors.Is(err, service.ErrBannedPrompt):
 			c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		case errors.Is(err, service.ErrInsufficientFunds):
 			c.JSON(http.StatusPaymentRequired, gin.H{"detail": "积分不足"})
@@ -132,7 +148,7 @@ func (h *UserGenerationHandler) Test(c *gin.Context) {
 		switch {
 		case errors.Is(err, service.ErrUnknownModel):
 			c.JSON(http.StatusNotFound, gin.H{"detail": err.Error()})
-		case errors.Is(err, service.ErrUnsupportedParams):
+		case errors.Is(err, service.ErrUnsupportedParams), errors.Is(err, service.ErrBannedPrompt):
 			c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 		case errors.Is(err, service.ErrProviderQuota):
 			c.JSON(http.StatusTooManyRequests, gin.H{"detail": err.Error()})
@@ -206,7 +222,14 @@ func (h *UserGenerationHandler) Logs(c *gin.Context) {
 	// rows with real media (success + stored file), not failed/pending events.
 	hasFile := c.Query("has_file") == "1" || c.Query("has_file") == "true"
 
-	items, total, stats, err := h.admin.Logs(c.Request.Context(), limit, offset, kind, status, statuses, nil, userID, excludeSource, source, hasFile)
+	// Media views hide homepage showcase files — those belong to the public
+	// landing page, not to the caller's personal works. Galleries imply it via
+	// has_file; the 画图台 grid opts in with exclude_showcase=1.
+	excludeShowcase := hasFile || c.Query("exclude_showcase") == "1"
+	// media=1 (画图台 grid): only pending rows or rows with a stored file, so a
+	// deleted work's blanked row doesn't consume one of the grid's slots.
+	mediaOnly := c.Query("media") == "1"
+	items, total, stats, err := h.admin.Logs(c.Request.Context(), limit, offset, kind, status, statuses, nil, userID, excludeSource, source, hasFile, excludeShowcase, mediaOnly)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to load logs"})
 		return

@@ -126,7 +126,7 @@ func NewApp(ctx context.Context) (*App, error) {
 	v1Svc := service.NewV1Service(cfg, modelRepo, userRepo, eventRepo, tokenRepo, siteRepo, cgroupRepo, concSvc, adobeClient, chatGPTClient, runwayClient, leonardoClient, kreaClient, imagineClient, grokClient, customClient, rustfsClient)
 	siteSvc := service.NewSiteService(siteRepo, cfg.AppTitle)
 	showcaseSvc := service.NewShowcaseService(showcaseRepo)
-	adminReadSvc := service.NewAdminReadService(cfg, userRepo, modelRepo, eventRepo, siteRepo, tokenRepo, cdkRepo, rustfsClient)
+	adminReadSvc := service.NewAdminReadService(cfg, userRepo, modelRepo, eventRepo, siteRepo, tokenRepo, cdkRepo, rustfsClient, showcaseRepo)
 	adminWriteSvc := service.NewAdminWriteService(userRepo, showcaseRepo, modelRepo, eventRepo, apiKeyRepo, tokenRepo)
 	cdkSvc := service.NewCDKService(cdkRepo, userRepo, siteRepo)
 	apiKeySvc := service.NewAPIKeyService(apiKeyRepo)
@@ -135,6 +135,8 @@ func NewApp(ctx context.Context) (*App, error) {
 	// Enable refresh-then-retry on a mid-request Adobe 401 (re-mint access token
 	// from the cookie). Wired post-construction to avoid a ctor init cycle.
 	v1Svc.SetRefresh(refreshSvc)
+	bannedWordRepo := repo.NewBannedWordRepository(db)
+	v1Svc.SetBannedWords(bannedWordRepo)
 	userGenSvc := service.NewUserGenerationService(v1Svc, eventRepo, userRepo, modelRepo)
 
 	engine := router.New(cfg, authSvc, router.Handlers{
@@ -155,6 +157,7 @@ func NewApp(ctx context.Context) (*App, error) {
 		ConcGroups:    handler.NewConcurrencyGroupHandler(cgroupSvc),
 		Announcement:  handler.NewAnnouncementHandler(announcementSvc),
 		Payment:       handler.NewPaymentHandler(paymentSvc),
+		BannedWords:   handler.NewBannedWordsHandler(bannedWordRepo),
 	})
 
 	// Background self-healing sweep (quota recovery, cookie refresh, stale-pending

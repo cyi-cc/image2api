@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
@@ -21,9 +22,10 @@ type AdminReadService struct {
 	tokens   *repo.TokenRepository
 	cdks     *repo.CDKRepository
 	store    *storage.Client
+	showcase *repo.ShowcaseRepository
 }
 
-func NewAdminReadService(cfg *config.Config, users *repo.UserRepository, models *repo.ModelRepository, events *repo.EventRepository, settings *repo.SiteSettingRepository, tokens *repo.TokenRepository, cdks *repo.CDKRepository, store *storage.Client) *AdminReadService {
+func NewAdminReadService(cfg *config.Config, users *repo.UserRepository, models *repo.ModelRepository, events *repo.EventRepository, settings *repo.SiteSettingRepository, tokens *repo.TokenRepository, cdks *repo.CDKRepository, store *storage.Client, showcase *repo.ShowcaseRepository) *AdminReadService {
 	return &AdminReadService{
 		cfg:      cfg,
 		users:    users,
@@ -33,7 +35,26 @@ func NewAdminReadService(cfg *config.Config, users *repo.UserRepository, models 
 		tokens:   tokens,
 		cdks:     cdks,
 		store:    store,
+		showcase: showcase,
 	}
+}
+
+// showcaseFileList returns the homepage showcase image keys (no leading slash).
+// User-facing galleries and the admin image manager hide these files — they
+// belong to the public landing page, not to anyone's personal works.
+func (s *AdminReadService) showcaseFileList(ctx context.Context) []string {
+	if s.showcase == nil {
+		return nil
+	}
+	set, err := s.showcase.PublicFileSet(ctx)
+	if err != nil || len(set) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	return out
 }
 
 func (s *AdminReadService) Users(ctx context.Context) ([]model.User, map[string]any, error) {
@@ -91,7 +112,11 @@ func (s *AdminReadService) ModelsView(ctx context.Context) ([]map[string]any, er
 	return out, nil
 }
 
-func (s *AdminReadService) Logs(ctx context.Context, limit, offset int, kind, status string, statuses []string, since *time.Time, userID, excludeSource, source string, hasFile bool) ([]model.EventLog, int64, *repo.EventStats, error) {
+func (s *AdminReadService) Logs(ctx context.Context, limit, offset int, kind, status string, statuses []string, since *time.Time, userID, excludeSource, source string, hasFile, excludeShowcase, mediaOnly bool) ([]model.EventLog, int64, *repo.EventStats, error) {
+	var excludeFiles []string
+	if excludeShowcase {
+		excludeFiles = s.showcaseFileList(ctx)
+	}
 	items, total, err := s.events.List(ctx, repo.EventListFilter{
 		Limit:         limit,
 		Offset:        offset,
@@ -103,6 +128,8 @@ func (s *AdminReadService) Logs(ctx context.Context, limit, offset int, kind, st
 		ExcludeSource: excludeSource,
 		Source:        source,
 		HasFile:       hasFile,
+		ExcludeFiles:  excludeFiles,
+		MediaOnly:     mediaOnly,
 	})
 	if err != nil {
 		return nil, 0, nil, err
@@ -406,8 +433,19 @@ func (s *AdminReadService) Images(ctx context.Context, limit, offset int, kind s
 	if err != nil {
 		return nil, 0, nil, err
 	}
+	// Homepage showcase media never shows in the image manager — it's public
+	// landing-page content, managed on the 首页内容 page instead.
+	pinned := map[string]struct{}{}
+	if s.showcase != nil {
+		if set, perr := s.showcase.PublicFileSet(ctx); perr == nil {
+			pinned = set
+		}
+	}
 	filtered := make([]generatedFile, 0, len(allFiles))
 	for _, item := range allFiles {
+		if _, ok := pinned[strings.TrimLeft(item.Name, "/")]; ok {
+			continue
+		}
 		if kind == "" || item.Kind == kind {
 			filtered = append(filtered, item)
 		}
@@ -521,6 +559,44 @@ func (s *AdminReadService) RecentImagesOwned(ctx context.Context, owner string, 
 		out = append(out, map[string]any{"name": f.Name, "size": f.Size, "mtime": f.MTime, "kind": f.Kind})
 	}
 	return out, nil
+}
+
+// DeleteOwnedFile removes a generated media object (and its thumbnail) that
+// lives under the given owner directory, then blanks the file reference on the
+// matching log rows so galleries and the 画图台 grid stop showing it. The owner
+// prefix check keeps a user from deleting anyone else's files.
+func (s *AdminReadService) DeleteOwnedFile(ctx context.Context, owner, rel string) error {
+	owner = strings.TrimSpace(owner)
+	rel = strings.TrimLeft(strings.TrimSpace(rel), "/")
+	if owner == "" {
+		return errors.New("invalid file")
+	}
+	if !strings.HasPrefix(rel, owner+"/") {
+		return errors.New("file not owned by caller")
+	}
+	return s.DeleteFile(ctx, rel)
+}
+
+// DeleteFile removes any generated media object (and its derived stills) and
+// blanks the log rows referencing it. Admin 图片管理 delete — no owner check.
+func (s *AdminReadService) DeleteFile(ctx context.Context, rel string) error {
+	rel = strings.TrimLeft(strings.TrimSpace(rel), "/")
+	if rel == "" || strings.Contains(rel, "..") {
+		return errors.New("invalid file")
+	}
+	if s.store == nil || !s.store.Configured() {
+		return errors.New("storage not configured")
+	}
+	if err := s.store.Delete(ctx, rel); err != nil {
+		return err
+	}
+	// Best-effort derived stills; old files may not have them.
+	_ = s.store.Delete(ctx, ThumbKey(rel))
+	_ = s.store.Delete(ctx, LastFrameKey(rel))
+	if _, err := s.events.ClearFiles(ctx, []string{rel}); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *AdminReadService) eventIndexByFile(ctx context.Context) (map[string]model.EventLog, error) {

@@ -24,7 +24,9 @@ type EventListFilter struct {
 	UserID        string
 	ExcludeSource string // when set, omit rows with this source (e.g. hide API-key "v1" usage from the customer logs page)
 	Source        string // when set, keep ONLY rows with this source (admin 来源 filter): "v1" (API key) / "user" (前台) / "admin" (测试模型)
-	HasFile       bool   // when true, keep ONLY rows with a non-empty file (the 创作记录 gallery — paginates over real media)
+	HasFile       bool     // when true, keep ONLY rows with a non-empty file (the 创作记录 gallery — paginates over real media)
+	ExcludeFiles  []string // when set, omit rows whose file is in this list (e.g. hide homepage showcase media from user galleries)
+	MediaOnly     bool     // when true, keep only rows that are pending or have a stored file — the 画图台 grid, so deleted works don't eat a slot
 }
 
 type EventStats struct {
@@ -65,6 +67,12 @@ func (r *EventRepository) List(ctx context.Context, filter EventListFilter) ([]m
 	}
 	if filter.HasFile {
 		q = q.Where("file <> ''")
+	}
+	if len(filter.ExcludeFiles) > 0 {
+		q = q.Where("file NOT IN ?", filter.ExcludeFiles)
+	}
+	if filter.MediaOnly {
+		q = q.Where("(status = 'pending' OR file <> '')")
 	}
 
 	var total int64

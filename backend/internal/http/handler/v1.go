@@ -316,7 +316,7 @@ func (h *V1Handler) writeV1Error(c *gin.Context, err error, payload map[string]a
 	switch {
 	case errors.Is(err, service.ErrUnknownModel):
 		c.JSON(http.StatusNotFound, gin.H{"detail": err.Error()})
-	case errors.Is(err, service.ErrUnsupportedParams):
+	case errors.Is(err, service.ErrUnsupportedParams), errors.Is(err, service.ErrBannedPrompt):
 		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
 	case errors.Is(err, service.ErrInsufficientFunds):
 		c.JSON(http.StatusPaymentRequired, gin.H{"detail": err.Error()})

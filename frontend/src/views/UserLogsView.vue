@@ -4,6 +4,7 @@ import { useRouter } from 'vue-router'
 import { api, generatedUrl, thumbUrl } from '../api'
 import { fmtTs } from '../utils/format'
 import { copyText } from '../utils/clipboard'
+import { zipSync } from 'fflate'
 import Icon from '../components/Icon.vue'
 import MediaLightbox from '../components/MediaLightbox.vue'
 
@@ -123,6 +124,99 @@ async function copyPrompt(e) {
 }
 
 const toast = ref('')
+
+// Delete one of my works (file + thumb server-side), then reload the page so
+// pagination stays accurate.
+async function deleteEntry(e) {
+  if (!e || !e.file) return
+  if (!confirm('确定删除这个作品？删除后不可恢复')) return
+  const r = await api('/my-files?file=' + encodeURIComponent(e.file), { method: 'DELETE' })
+  toast.value = r.ok ? '已删除' : (r.data?.detail || '删除失败')
+  setTimeout(() => (toast.value = ''), 1500)
+  if (r.ok) load()
+}
+// multi-select (keyed by file path) — bulk delete/download from the filter bar.
+const picked = ref(new Set())
+function togglePick(e) {
+  if (!e.file) return
+  const s = new Set(picked.value)
+  s.has(e.file) ? s.delete(e.file) : s.add(e.file)
+  picked.value = s
+}
+const pageAllPicked = computed(() => {
+  const files = filtered.value.filter((e) => e.status === 'success' && e.file)
+  return files.length > 0 && files.every((e) => picked.value.has(e.file))
+})
+function togglePickAll() {
+  const s = new Set(picked.value)
+  const files = filtered.value.filter((e) => e.status === 'success' && e.file)
+  if (pageAllPicked.value) files.forEach((e) => s.delete(e.file))
+  else files.forEach((e) => s.add(e.file))
+  picked.value = s
+}
+async function deletePicked() {
+  const files = [...picked.value]
+  if (!files.length) return
+  if (!confirm(`确定删除选中的 ${files.length} 个作品？删除后不可恢复`)) return
+  let ok = 0
+  for (const f of files) {
+    const r = await api('/my-files?file=' + encodeURIComponent(f), { method: 'DELETE' })
+    if (r.ok) ok++
+  }
+  picked.value = new Set()
+  toast.value = `已删除 ${ok} 个`
+  setTimeout(() => (toast.value = ''), 1500)
+  load()
+}
+// Single pick → direct file download; multiple → bundle into one zip.
+const zipping = ref(false)
+async function downloadPicked() {
+  const files = [...picked.value]
+  if (!files.length) return
+  if (files.length === 1) {
+    const a = document.createElement('a')
+    a.href = generatedUrl(files[0])
+    a.download = files[0].split('/').pop()
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    return
+  }
+  zipping.value = true
+  toast.value = '打包中…'
+  try {
+    // Fetch concurrently (10 at a time) so large batches pack fast.
+    const bufs = []
+    let next = 0
+    await Promise.all(Array.from({ length: Math.min(10, files.length) }, async () => {
+      while (next < files.length) {
+        const i = next++
+        bufs[i] = await (await fetch(generatedUrl(files[i]))).arrayBuffer()
+      }
+    }))
+    const entries = {}
+    files.forEach((f, i) => {
+      let name = f.split('/').pop()
+      while (entries[name]) name = '_' + name
+      entries[name] = [new Uint8Array(bufs[i]), { level: 0 }]
+    })
+    const zipped = zipSync(entries)
+    const url = URL.createObjectURL(new Blob([zipped], { type: 'application/zip' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `作品-${files.length}个-${Date.now()}.zip`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 30000)
+    toast.value = '已打包下载'
+  } catch {
+    toast.value = '打包失败'
+  }
+  zipping.value = false
+  setTimeout(() => (toast.value = ''), 1500)
+}
+
 const lightbox = ref(null)
 // Videos whose first-frame thumbnail is missing (old videos) — fall back to
 // the muted <video> preview for those cards.
@@ -168,6 +262,18 @@ onUnmounted(() => {
       <div class="flex-1 min-w-[180px]">
         <input v-model="search" class="field !py-1.5 text-xs" placeholder="搜索提示词或模型…" />
       </div>
+      <button @click="togglePickAll" class="text-xs rounded-lg px-2.5 py-1.5 transition-colors inline-flex items-center gap-1"
+              :class="pageAllPicked ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
+        <Icon name="check" class="w-3.5 h-3.5" /> 全选本页
+      </button>
+      <template v-if="picked.size">
+        <button @click="downloadPicked" :disabled="zipping" class="text-xs rounded-lg px-2.5 py-1.5 bg-slate-900 text-white hover:bg-slate-700 inline-flex items-center gap-1 disabled:opacity-50">
+          <Icon name="download" class="w-3.5 h-3.5" /> {{ zipping ? '打包中…' : `下载选中 (${picked.size})` }}
+        </button>
+        <button @click="deletePicked" class="text-xs rounded-lg px-2.5 py-1.5 bg-rose-600 text-white hover:bg-rose-500 inline-flex items-center gap-1">
+          <Icon name="trash" class="w-3.5 h-3.5" /> 删除选中 ({{ picked.size }})
+        </button>
+      </template>
     </div>
 
     <!-- Empty -->
@@ -217,11 +323,18 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- kind chip -->
-        <span class="absolute top-3 left-3 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ring-1"
-              :class="e.kind === 'video' ? 'bg-fuchsia-500/20 text-fuchsia-200 ring-fuchsia-400/30' : 'bg-indigo-500/20 text-indigo-200 ring-indigo-400/30'">
-          {{ e.kind === 'video' ? '视频' : '图像' }}
-        </span>
+        <!-- select + kind chip -->
+        <div class="absolute top-3 left-3 flex items-center gap-1.5">
+          <button v-if="e.status === 'success' && e.file" @click.stop.prevent="togglePick(e)"
+                  :title="picked.has(e.file) ? '取消选择' : '选择'"
+                  class="pick" :class="picked.has(e.file) && 'pick-on'">
+            <Icon name="check" class="w-3 h-3" />
+          </button>
+          <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ring-1"
+                :class="e.kind === 'video' ? 'bg-fuchsia-500/20 text-fuchsia-200 ring-fuchsia-400/30' : 'bg-indigo-500/20 text-indigo-200 ring-indigo-400/30'">
+            {{ e.kind === 'video' ? '视频' : '图像' }}
+          </span>
+        </div>
 
         <!-- hover actions (only when there's a file) -->
         <div v-if="e.status === 'success' && e.file"
@@ -234,6 +347,10 @@ onUnmounted(() => {
              class="w-7 h-7 rounded-lg bg-black/50 ring-1 ring-white/10 hover:bg-black/70 text-white grid place-items-center">
             <Icon name="download" class="w-3.5 h-3.5" />
           </a>
+          <button @click.stop.prevent="deleteEntry(e)" title="删除"
+                  class="w-7 h-7 rounded-lg bg-black/50 ring-1 ring-white/10 hover:bg-rose-600/80 text-white grid place-items-center">
+            <Icon name="trash" class="w-3.5 h-3.5" />
+          </button>
         </div>
 
         <!-- caption (over a real image) -->
@@ -309,4 +426,19 @@ onUnmounted(() => {
 }
 .pg:hover:not(.pg-on) { background: rgb(226 232 240); color: rgb(15 23 42); }
 .pg-on { background: rgb(15 23 42); color: white; box-shadow: none; }
+
+/* card select toggle — always visible rounded-square check button */
+.pick {
+  width: 1.4rem; height: 1.4rem; border-radius: 0.375rem;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: rgb(255 255 255 / 0.85);
+  background: rgb(0 0 0 / 0.45);
+  box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.75);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.pick svg { opacity: 0; transition: opacity 0.15s; }
+.pick:hover { background: rgb(0 0 0 / 0.65); }
+.pick:hover svg { opacity: 0.6; }
+.pick-on { background: rgb(217 70 239); box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.9); }
+.pick-on svg { opacity: 1; }
 </style>

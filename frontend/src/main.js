@@ -23,6 +23,7 @@ import ModelsView from './views/ModelsView.vue'
 import AccountsView from './views/AccountsView.vue'
 import UsersView from './views/UsersView.vue'
 import ConcurrencyView from './views/ConcurrencyView.vue'
+import BannedWordsView from './views/BannedWordsView.vue'
 import CdksView from './views/CdksView.vue'
 import InvitesAdminView from './views/InvitesAdminView.vue'
 import ImagesView from './views/ImagesView.vue'
@@ -56,6 +57,7 @@ const routes = [
       { path: 'accounts', component: AccountsView, meta: { label: '账号管理' } },
       { path: 'users',    component: UsersView,    meta: { label: '用户管理' } },
       { path: 'concurrency', component: ConcurrencyView, meta: { label: '并发分组' } },
+      { path: 'banned-words', component: BannedWordsView, meta: { label: '违禁词管理' } },
       { path: 'orders', component: AdminOrdersView, meta: { label: '订单管理' } },
       { path: 'cdks',     component: CdksView,     meta: { label: '兑换码管理' } },
       { path: 'invites',  component: InvitesAdminView, meta: { label: '邀请日志' } },

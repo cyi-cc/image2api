@@ -234,8 +234,9 @@ function useExample(ex) {
           <div v-for="(w, i) in [...works, ...works]" :key="w.id + '-' + i"
                class="shrink-0 w-56 h-56 rounded-2xl overflow-hidden ring-1 ring-white/[0.08] hover:ring-white/30 hover:scale-[1.02] transition-all cursor-pointer relative"
                @click="go('/logs')">
-            <img :src="imgSrc(w.image)" loading="lazy"
-                 class="w-full h-full object-cover" />
+            <!-- background-image (not <img>) so Edge shows no 视觉搜索 overlay icon. -->
+            <div :style="{ backgroundImage: `url(${imgSrc(w.image)})` }"
+                 class="w-full h-full bg-cover bg-center"></div>
             <div v-if="w.title" class="absolute inset-x-0 bottom-0 p-3 bg-gradient-to-t from-black/85 via-black/30 to-transparent">
               <div class="text-xs font-medium text-white line-clamp-1">{{ w.title }}</div>
             </div>

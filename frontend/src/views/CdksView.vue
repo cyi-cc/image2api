@@ -75,12 +75,13 @@ function toggleSelect(code) {
   s.has(code) ? s.delete(code) : s.add(code)
   selected.value = s
 }
+// Header checkbox selects/deselects the CURRENT PAGE only.
 const allSelected = computed(() =>
-  filtered.value.length > 0 && filtered.value.every((c) => selected.value.has(c.code)))
+  pagedItems.value.length > 0 && pagedItems.value.every((c) => selected.value.has(c.code)))
 function toggleSelectAll() {
   const s = new Set(selected.value)
-  if (allSelected.value) filtered.value.forEach((c) => s.delete(c.code))
-  else filtered.value.forEach((c) => s.add(c.code))
+  if (allSelected.value) pagedItems.value.forEach((c) => s.delete(c.code))
+  else pagedItems.value.forEach((c) => s.add(c.code))
   selected.value = s
 }
 async function delSelected() {

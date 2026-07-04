@@ -396,7 +396,7 @@ let prevPending = 0
 async function loadHistory() {
   // Server-side filter: status IN (pending, success), newest 12 — exactly the
   // rows the grid shows, in one query (no client over-fetch).
-  const r = await api('/logs?limit=10&statuses=pending,success&source=user')
+  const r = await api('/logs?limit=10&statuses=pending,success&source=user&exclude_showcase=1&media=1')
   if (!r.ok) return
   history.value = (r.data?.data || [])
     .filter((e) => e.status === 'pending' || e.file)
@@ -421,6 +421,22 @@ async function loadHistory() {
   })
   if (serverPending.size < prevPending) refreshMe()
   prevPending = serverPending.size
+}
+
+// Delete one of my works: remove the stored file (+thumb) server-side, then
+// drop the card locally so it disappears before the next history poll.
+async function deleteItem(item) {
+  if (!item || !item.url) return
+  if (!confirm('确定删除这个作品？删除后不可恢复')) return
+  const rel = (item.url || '').split('?')[0].split('/images/').pop()
+  const r = await api('/my-files?file=' + encodeURIComponent(rel), { method: 'DELETE' })
+  if (r.ok) {
+    tasks.value = tasks.value.filter((t) => t.id !== item.id)
+    history.value = history.value.filter((h) => h.id !== item.id)
+    flash('已删除')
+  } else {
+    flash(r.data?.detail || '删除失败')
+  }
 }
 
 // Click a generated IMAGE → use it as a reference. Single-ref model: replace the
@@ -725,6 +741,10 @@ onUnmounted(() => {
                       :title="item.kind === 'video' ? '把末帧设为首帧' : '作为参考图'"
                       class="w-7 h-7 rounded-lg bg-black/50 ring-1 ring-white/10 hover:bg-black/70 text-white grid place-items-center">
                 <Icon name="plus" class="w-3.5 h-3.5" />
+              </button>
+              <button @click.stop.prevent="deleteItem(item)" title="删除"
+                      class="w-7 h-7 rounded-lg bg-black/50 ring-1 ring-white/10 hover:bg-rose-600/80 text-white grid place-items-center">
+                <Icon name="trash" class="w-3.5 h-3.5" />
               </button>
             </div>
             <div class="absolute inset-x-0 bottom-0 p-2.5 pointer-events-none">

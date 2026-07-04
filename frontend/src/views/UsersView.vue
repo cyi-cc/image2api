@@ -169,12 +169,13 @@ function toggleSelect(id) {
   s.has(id) ? s.delete(id) : s.add(id)
   selected.value = s
 }
+// Header checkbox selects/deselects the CURRENT PAGE only.
 const allSelected = computed(() =>
-  filtered.value.length > 0 && filtered.value.every((u) => selected.value.has(u.id)))
+  pagedItems.value.length > 0 && pagedItems.value.every((u) => selected.value.has(u.id)))
 function toggleSelectAll() {
   const s = new Set(selected.value)
-  if (allSelected.value) filtered.value.forEach((u) => s.delete(u.id))
-  else filtered.value.forEach((u) => s.add(u.id))
+  if (allSelected.value) pagedItems.value.forEach((u) => s.delete(u.id))
+  else pagedItems.value.forEach((u) => s.add(u.id))
   selected.value = s
 }
 async function delSelected() {
@@ -274,6 +275,7 @@ async function quickCredits(u, delta) {
           <col class="w-24" />     <!-- credits -->
           <col class="w-24" />     <!-- recharge total -->
           <col class="w-20" />     <!-- generation count -->
+          <col class="w-20" />     <!-- banned word hits -->
           <col class="w-28" />     <!-- registered -->
           <col class="w-28" />     <!-- last login -->
           <col class="w-32" />     <!-- login IP -->
@@ -294,6 +296,7 @@ async function quickCredits(u, delta) {
             <th class="text-right px-3 py-3 font-medium">积分</th>
             <th class="text-right px-3 py-3 font-medium">累计充值</th>
             <th class="text-right px-3 py-3 font-medium">生图次数</th>
+            <th class="text-right px-3 py-3 font-medium">违禁触发</th>
             <th class="text-left px-3 py-3 font-medium">注册时间</th>
             <th class="text-left px-3 py-3 font-medium">最近登录</th>
             <th class="text-left px-3 py-3 font-medium">登录 IP</th>
@@ -349,6 +352,10 @@ async function quickCredits(u, delta) {
             <td class="px-3 py-3.5 align-middle text-right tabular-nums whitespace-nowrap"
                 :class="u.generation_count > 0 ? 'text-white/85' : 'text-white/25'">
               {{ (u.generation_count || 0).toLocaleString('en-US') }}
+            </td>
+            <td class="px-3 py-3.5 align-middle text-right tabular-nums whitespace-nowrap"
+                :class="u.banned_word_hits > 0 ? 'text-rose-300' : 'text-white/25'">
+              {{ (u.banned_word_hits || 0).toLocaleString('en-US') }}
             </td>
             <td class="px-3 py-3.5 align-middle text-xs whitespace-nowrap">
               <div v-if="u.created_at" class="leading-tight" :title="fmtTs(u.created_at)">

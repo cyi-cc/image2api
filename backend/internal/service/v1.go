@@ -37,6 +37,7 @@ var (
 	ErrInvalidAPIKey       = errors.New("invalid api key")
 	ErrUnknownModel        = errors.New("unknown model")
 	ErrUnsupportedParams   = errors.New("unsupported or unpriced parameters for this model")
+	ErrBannedPrompt        = errors.New("prompt contains banned content")
 	ErrInsufficientFunds   = errors.New("insufficient credits")
 	ErrGenerationPending   = errors.New("generation executor not implemented yet")
 	ErrProviderAuth        = errors.New("provider token invalid or expired")
@@ -83,6 +84,9 @@ type V1Service struct {
 	// 401 mid-flight (set via SetRefresh — wired after construction to avoid an
 	// init cycle). nil for deployments without cookie refresh.
 	refresh *RefreshProfileService
+	// banned is the admin-managed prompt blocklist (set via SetBannedWords).
+	// nil disables the check.
+	banned *repo.BannedWordRepository
 
 	// tokenCursors holds one strict round-robin cursor per pool (key: pool name,
 	// value: *uint64). Each pick advances the pool's cursor by one so accounts
@@ -244,6 +248,36 @@ func (s *V1Service) Inflight() *InflightRegistry { return s.inflight }
 // without reordering). Enables refresh-then-retry on a mid-request 401.
 func (s *V1Service) SetRefresh(r *RefreshProfileService) { s.refresh = r }
 
+// SetBannedWords wires the prompt blocklist in after construction.
+func (s *V1Service) SetBannedWords(r *repo.BannedWordRepository) { s.banned = r }
+
+// checkBannedPrompt rejects the request when the prompt contains any banned
+// word (case-insensitive substring). A hit bumps the word's counter and the
+// user's 违禁词触发次数 before rejecting.
+func (s *V1Service) checkBannedPrompt(ctx context.Context, principal *APIPrincipal, prompt string) error {
+	if s.banned == nil || strings.TrimSpace(prompt) == "" {
+		return nil
+	}
+	words, err := s.banned.List(ctx)
+	if err != nil || len(words) == 0 {
+		return nil
+	}
+	lower := strings.ToLower(prompt)
+	for _, w := range words {
+		term := strings.ToLower(strings.TrimSpace(w.Word))
+		if term == "" || !strings.Contains(lower, term) {
+			continue
+		}
+		userID := ""
+		if principal != nil && principal.User != nil {
+			userID = principal.User.ID
+		}
+		s.banned.RecordHit(ctx, w.ID, userID)
+		return fmt.Errorf("%w: banned word \"%s\"", ErrBannedPrompt, w.Word)
+	}
+	return nil
+}
+
 // refreshAdobeToken re-mints an Adobe account's access token from its cookie
 // (RefreshNow) and returns the updated row. Used to retry a 401 with a fresh
 // token instead of replaying the stale one. Returns false if refresh is
@@ -339,6 +373,11 @@ func (s *V1Service) prepareImageExecution(ctx context.Context, principal *APIPri
 	// generation from running on for minutes and surfacing a late "success" on an
 	// already-abandoned event.
 	ctx = context.WithoutCancel(ctx)
+	if source != "admin" {
+		if err := s.checkBannedPrompt(ctx, principal, in.Prompt); err != nil {
+			return nil, err
+		}
+	}
 	genCtx, cancel := context.WithTimeout(ctx, 8*time.Minute)
 	defer cancel()
 
@@ -577,6 +616,11 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 	// context (12-min backstop — video polls up to 10 min — and registered so the
 	// maintenance sweep can cancel a stuck render when it abandons the row).
 	ctx = context.WithoutCancel(ctx)
+	if source != "admin" {
+		if err := s.checkBannedPrompt(ctx, principal, in.Prompt); err != nil {
+			return nil, err
+		}
+	}
 	genCtx, cancel := context.WithTimeout(ctx, 12*time.Minute)
 	defer cancel()
 
@@ -712,6 +756,9 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 // the background, and returns the OpenAI video object (status "queued").
 func (s *V1Service) StartVideoJob(ctx context.Context, principal *APIPrincipal, in V1VideoRequest) (map[string]any, error) {
 	ctx = context.WithoutCancel(ctx)
+	if err := s.checkBannedPrompt(ctx, principal, in.Prompt); err != nil {
+		return nil, err
+	}
 	modelItem, resolution, aspectRatio, duration, price, err := s.prepareVideo(ctx, principal, in, true)
 	if err != nil {
 		return nil, err

@@ -3,6 +3,7 @@ import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import { api, generatedUrl, thumbUrl } from '../api'
 import { fmtTs, fmtSize } from '../utils/format'
 import { copyText } from '../utils/clipboard'
+import { zipSync } from 'fflate'
 import Icon from '../components/Icon.vue'
 import MediaLightbox from '../components/MediaLightbox.vue'
 
@@ -36,6 +37,92 @@ async function load() {
   // Stats arrive with the same payload so the KPI strip stays cheap.
   stats.value = r.data?.stats || { total: 0, image: 0, video: 0, size_bytes: 0 }
   loading.value = false
+}
+
+// Admin delete: remove the file (+derived stills) from storage, then reload
+// so pagination and the KPI strip stay accurate.
+async function deleteFile(f) {
+  if (!f || !f.name) return
+  if (!confirm('确定删除这个文件？删除后不可恢复')) return
+  const r = await api('/images?name=' + encodeURIComponent(f.name), { method: 'DELETE' })
+  flash(r.ok ? '已删除' : (r.data?.detail || '删除失败'))
+  if (r.ok) load()
+}
+
+// multi-select (keyed by file name) — bulk delete/download from the toolbar.
+const picked = ref(new Set())
+function togglePick(f) {
+  const s = new Set(picked.value)
+  s.has(f.name) ? s.delete(f.name) : s.add(f.name)
+  picked.value = s
+}
+const pageAllPicked = computed(() =>
+  items.value.length > 0 && items.value.every((f) => picked.value.has(f.name)))
+function togglePickAll() {
+  const s = new Set(picked.value)
+  if (pageAllPicked.value) items.value.forEach((f) => s.delete(f.name))
+  else items.value.forEach((f) => s.add(f.name))
+  picked.value = s
+}
+async function deletePicked() {
+  const names = [...picked.value]
+  if (!names.length) return
+  if (!confirm(`确定删除选中的 ${names.length} 个文件？删除后不可恢复`)) return
+  let ok = 0
+  for (const n of names) {
+    const r = await api('/images?name=' + encodeURIComponent(n), { method: 'DELETE' })
+    if (r.ok) ok++
+  }
+  picked.value = new Set()
+  flash(`已删除 ${ok} 个`)
+  load()
+}
+// Single pick → direct file download; multiple → bundle into one zip.
+const zipping = ref(false)
+async function downloadPicked() {
+  const names = [...picked.value]
+  if (!names.length) return
+  if (names.length === 1) {
+    const a = document.createElement('a')
+    a.href = generatedUrl(names[0])
+    a.download = names[0].split('/').pop()
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    return
+  }
+  zipping.value = true
+  flash('打包中…')
+  try {
+    // Fetch concurrently (10 at a time) so large batches pack fast.
+    const bufs = []
+    let next = 0
+    await Promise.all(Array.from({ length: Math.min(10, names.length) }, async () => {
+      while (next < names.length) {
+        const i = next++
+        bufs[i] = await (await fetch(generatedUrl(names[i]))).arrayBuffer()
+      }
+    }))
+    const entries = {}
+    names.forEach((n, i) => {
+      let name = n.split('/').pop()
+      while (entries[name]) name = '_' + name
+      entries[name] = [new Uint8Array(bufs[i]), { level: 0 }]
+    })
+    const zipped = zipSync(entries)
+    const url = URL.createObjectURL(new Blob([zipped], { type: 'application/zip' }))
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `图片-${names.length}个-${Date.now()}.zip`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 30000)
+    flash('已打包下载')
+  } catch {
+    flash('打包失败')
+  }
+  zipping.value = false
 }
 
 function absUrl(name) {
@@ -148,9 +235,22 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <button @click="setKind('image')" class="fp" :class="kind === 'image' && 'fp-on'">图像</button>
         <button @click="setKind('video')" class="fp" :class="kind === 'video' && 'fp-on'">视频</button>
       </div>
-      <button @click="load" class="btn-soft">
-        <Icon name="refresh" class="w-3.5 h-3.5" /> 刷新
-      </button>
+      <div class="flex items-center gap-2">
+        <button @click="togglePickAll" class="btn-soft" :class="pageAllPicked && '!bg-white/90 !text-slate-900'">
+          <Icon name="check" class="w-3.5 h-3.5" /> 全选本页
+        </button>
+        <template v-if="picked.size">
+          <button @click="downloadPicked" :disabled="zipping" class="btn-soft disabled:opacity-50">
+            <Icon name="download" class="w-3.5 h-3.5" /> {{ zipping ? '打包中…' : `下载选中 (${picked.size})` }}
+          </button>
+          <button @click="deletePicked" class="btn-soft danger">
+            <Icon name="trash" class="w-3.5 h-3.5" /> 删除选中 ({{ picked.size }})
+          </button>
+        </template>
+        <button @click="load" class="btn-soft">
+          <Icon name="refresh" class="w-3.5 h-3.5" /> 刷新
+        </button>
+      </div>
     </div>
 
     <!-- grid -->
@@ -186,11 +286,17 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
         <!-- gradient veil (always visible so the prompt overlay reads) -->
         <div class="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/85 via-black/40 to-transparent pointer-events-none"></div>
 
-        <!-- kind chip -->
-        <span class="absolute top-3 left-3 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ring-1"
-              :class="f.kind === 'video' ? 'bg-fuchsia-500/20 text-fuchsia-200 ring-fuchsia-400/30' : 'bg-indigo-500/20 text-indigo-200 ring-indigo-400/30'">
-          {{ f.kind === 'video' ? '视频' : '图像' }}
-        </span>
+        <!-- select + kind chip -->
+        <div class="absolute top-3 left-3 flex items-center gap-1.5">
+          <button @click.stop.prevent="togglePick(f)" :title="picked.has(f.name) ? '取消选择' : '选择'"
+                  class="pick" :class="picked.has(f.name) && 'pick-on'">
+            <Icon name="check" class="w-3 h-3" />
+          </button>
+          <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium uppercase tracking-wider ring-1"
+                :class="f.kind === 'video' ? 'bg-fuchsia-500/20 text-fuchsia-200 ring-fuchsia-400/30' : 'bg-indigo-500/20 text-indigo-200 ring-indigo-400/30'">
+            {{ f.kind === 'video' ? '视频' : '图像' }}
+          </span>
+        </div>
 
         <!-- quick actions, hover-revealed; same style as 首页内容 -->
         <div class="absolute top-3 right-3 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
@@ -202,6 +308,10 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
              class="w-7 h-7 rounded-lg bg-black/50 ring-1 ring-white/10 hover:bg-black/70 text-white grid place-items-center">
             <Icon name="download" class="w-3.5 h-3.5" />
           </a>
+          <button @click.stop.prevent="deleteFile(f)" title="删除"
+                  class="w-7 h-7 rounded-lg bg-black/50 ring-1 ring-white/10 hover:bg-rose-600/80 text-white grid place-items-center">
+            <Icon name="trash" class="w-3.5 h-3.5" />
+          </button>
         </div>
 
         <!-- caption: prompt (truncated 2 lines) + meta line -->
@@ -304,4 +414,29 @@ html.dark .fp-on { background: rgb(255 255 255 / 0.92); color: rgb(15 23 42); }
 .pg:hover:not(.pg-on) { background: var(--hover); color: var(--fg); }
 .pg-on { background: rgb(15 23 42); color: white; box-shadow: none; }
 html.dark .pg-on { background: rgb(255 255 255 / 0.92); color: rgb(15 23 42); }
+
+.btn-soft.danger {
+  color: rgb(253 164 175);
+  background: rgb(244 63 94 / 0.12);
+  box-shadow: inset 0 0 0 1px rgb(244 63 94 / 0.3);
+}
+.btn-soft.danger:hover {
+  color: white;
+  background: rgb(244 63 94 / 0.25);
+}
+
+/* card select toggle — always visible rounded-square check button */
+.pick {
+  width: 1.4rem; height: 1.4rem; border-radius: 0.375rem;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: rgb(255 255 255 / 0.85);
+  background: rgb(0 0 0 / 0.45);
+  box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.75);
+  transition: background 0.15s, box-shadow 0.15s;
+}
+.pick svg { opacity: 0; transition: opacity 0.15s; }
+.pick:hover { background: rgb(0 0 0 / 0.65); }
+.pick:hover svg { opacity: 0.6; }
+.pick-on { background: rgb(217 70 239); box-shadow: inset 0 0 0 1.5px rgb(255 255 255 / 0.9); }
+.pick-on svg { opacity: 1; }
 </style>

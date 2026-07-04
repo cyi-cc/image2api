@@ -279,13 +279,13 @@ function toggleSelect(id) {
   s.has(id) ? s.delete(id) : s.add(id)
   selected.value = s
 }
-// Header checkbox controls the whole filtered set (not just the visible page).
+// Header checkbox selects/deselects the CURRENT PAGE only.
 const allSelected = computed(() =>
-  filtered.value.length > 0 && filtered.value.every((a) => selected.value.has(a.id)))
+  pagedItems.value.length > 0 && pagedItems.value.every((a) => selected.value.has(a.id)))
 function toggleSelectAll() {
   const s = new Set(selected.value)
-  if (allSelected.value) filtered.value.forEach((a) => s.delete(a.id))
-  else filtered.value.forEach((a) => s.add(a.id))
+  if (allSelected.value) pagedItems.value.forEach((a) => s.delete(a.id))
+  else pagedItems.value.forEach((a) => s.add(a.id))
   selected.value = s
 }
 async function deleteSelected() {

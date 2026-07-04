@@ -26,11 +26,23 @@ type User struct {
 	CheckinLast        string `gorm:"size:32"`
 	CheckinStreak      int    `gorm:"not null;default:0"`
 	GenerationCount    int64  `gorm:"not null;default:0"`
+	BannedWordHits     int64  `gorm:"not null;default:0"` // 提示词命中违禁词被拦截的累计次数
 	LastLoginAt        *time.Time
 	LastLoginIP        string `gorm:"size:128"`
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 	APIKeys            []APIKey `gorm:"foreignKey:UserID"`
+}
+
+// BannedWord is an admin-managed prompt blocklist entry. Generation requests
+// whose prompt contains Word (case-insensitive substring) are rejected before
+// reaching any provider; Hits counts how many requests each word blocked.
+type BannedWord struct {
+	ID        string `gorm:"primaryKey;size:32"`
+	Word      string `gorm:"size:255;uniqueIndex;not null"`
+	Hits      int64  `gorm:"not null;default:0"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type APIKey struct {
@@ -206,6 +218,7 @@ type SiteSetting struct {
 func AutoMigrateModels() []any {
 	return []any{
 		&User{},
+		&BannedWord{},
 		&APIKey{},
 		&ShowcaseItem{},
 		&EventLog{},

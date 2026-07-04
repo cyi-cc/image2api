@@ -14,6 +14,7 @@ const tabs = [
   { label: '账号管理', to: '/admin/accounts', icon: 'plug' },
   { label: '用户管理', to: '/admin/users',    icon: 'accounts' },
   { label: '并发分组', to: '/admin/concurrency', icon: 'shield' },
+  { label: '违禁词管理', to: '/admin/banned-words', icon: 'ban' },
   { label: '订单管理', to: '/admin/orders',   icon: 'receipt' },
   { label: '兑换码管理', to: '/admin/cdks',   icon: 'spark' },
   { label: '邀请日志', to: '/admin/invites',  icon: 'accounts' },
