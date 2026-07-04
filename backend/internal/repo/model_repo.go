@@ -44,19 +44,6 @@ func (r *ModelRepository) Get(ctx context.Context, modelID string) (*model.Model
 	return &item, nil
 }
 
-// GetAllMatching returns all models that match the given modelID (by alias or id).
-// Used for multi-model load balancing when multiple models share the same alias.
-func (r *ModelRepository) GetAllMatching(ctx context.Context, modelID string) ([]model.ModelConfig, error) {
-	var items []model.ModelConfig
-	if err := r.db.WithContext(ctx).
-		Where("(alias <> '' AND alias = ?) OR (alias = '' AND id = ?)", modelID, modelID).
-		Order("weight desc, created_at desc").
-		Find(&items).Error; err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 func (r *ModelRepository) NameMap(ctx context.Context) (map[string]string, error) {
 	items, err := r.List(ctx)
 	if err != nil {

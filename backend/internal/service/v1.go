@@ -91,11 +91,6 @@ type V1Service struct {
 	// two simultaneous requests never start on the same account.
 	tokenCursors sync.Map
 
-	// modelCursors holds one strict round-robin cursor per model alias/id (key: modelID,
-	// value: *uint64). Each pick advances the model's cursor by one so models
-	// are used in a fixed, even rotation when multiple models share the same alias.
-	modelCursors sync.Map
-
 	// inflight maps an in-progress event ID → the cancel func of its generation
 	// work context, so the maintenance sweep can stop a stuck generation the
 	// moment it abandons the row (instead of letting an orphaned goroutine run on
@@ -966,29 +961,16 @@ func (s *V1Service) prepareImage(ctx context.Context, principal *APIPrincipal, i
 	if modelID == "" || prompt == "" {
 		return nil, "", "", 0, errors.New("model and prompt required")
 	}
-	// Try to get all matching models for load balancing
-	modelItems, err := s.models.GetAllMatching(ctx, modelID)
+	modelItem, err := s.models.Get(ctx, modelID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, "", "", 0, ErrUnknownModel
 		}
 		return nil, "", "", 0, err
 	}
-	if len(modelItems) == 0 {
+	if !modelItem.Enabled || modelItem.Type != "image" {
 		return nil, "", "", 0, ErrUnknownModel
 	}
-	// Filter enabled image models
-	var validModels []*model.ModelConfig
-	for i := range modelItems {
-		if modelItems[i].Enabled && modelItems[i].Type == "image" {
-			validModels = append(validModels, &modelItems[i])
-		}
-	}
-	if len(validModels) == 0 {
-		return nil, "", "", 0, ErrUnknownModel
-	}
-	// Select model using round-robin if multiple valid models
-	modelItem := s.selectModelByRoundRobin(validModels, modelID)
 	// Fail fast before charging if the provider has no usable account. Use the
 	// effective provider: a custom upstream serving this model id routes to
 	// "custom" (effectiveProvider only returns it when such an account exists, so
@@ -1049,29 +1031,16 @@ func (s *V1Service) prepareVideo(ctx context.Context, principal *APIPrincipal, i
 	if duration == "" {
 		return nil, "", "", "", 0, errors.New("duration required")
 	}
-	// Try to get all matching models for load balancing
-	modelItems, err := s.models.GetAllMatching(ctx, modelID)
+	modelItem, err := s.models.Get(ctx, modelID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, "", "", "", 0, ErrUnknownModel
 		}
 		return nil, "", "", "", 0, err
 	}
-	if len(modelItems) == 0 {
+	if !modelItem.Enabled || modelItem.Type != "video" {
 		return nil, "", "", "", 0, ErrUnknownModel
 	}
-	// Filter enabled video models
-	var validModels []*model.ModelConfig
-	for i := range modelItems {
-		if modelItems[i].Enabled && modelItems[i].Type == "video" {
-			validModels = append(validModels, &modelItems[i])
-		}
-	}
-	if len(validModels) == 0 {
-		return nil, "", "", "", 0, ErrUnknownModel
-	}
-	// Select model using round-robin if multiple valid models
-	modelItem := s.selectModelByRoundRobin(validModels, modelID)
 	// Fail fast before charging — effective provider (custom upstream by id, else native).
 	if eff := s.effectiveProvider(ctx, modelItem); eff == "custom" {
 		// custom serves this id (effectiveProvider guaranteed it) — precheck ok
@@ -3015,26 +2984,6 @@ func (s *V1Service) markTokenDead(ctx context.Context, pool string, token model.
 // the rotation's starting point — distribution stays even.
 func (s *V1Service) nextCursor(pool string) uint64 {
 	v, _ := s.tokenCursors.LoadOrStore(pool, new(uint64))
-	return atomic.AddUint64(v.(*uint64), 1) - 1
-}
-
-// selectModelByRoundRobin selects a model from a list using round-robin.
-// The cursor is per modelID (alias), so different aliases rotate independently.
-func (s *V1Service) selectModelByRoundRobin(models []*model.ModelConfig, modelID string) *model.ModelConfig {
-	if len(models) == 0 {
-		return nil
-	}
-	if len(models) == 1 {
-		return models[0]
-	}
-	cursor := s.nextModelCursor(modelID)
-	index := cursor % uint64(len(models))
-	return models[index]
-}
-
-// nextModelCursor returns the next round-robin index for a model alias/id.
-func (s *V1Service) nextModelCursor(modelID string) uint64 {
-	v, _ := s.modelCursors.LoadOrStore(modelID, new(uint64))
 	return atomic.AddUint64(v.(*uint64), 1) - 1
 }
 
