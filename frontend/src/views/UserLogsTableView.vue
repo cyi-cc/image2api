@@ -198,7 +198,7 @@ const params = (e) => {
           <col class="w-28" />     <!-- time -->
           <col class="w-24" />     <!-- status -->
           <col class="w-28" />     <!-- user/account -->
-          <col class="w-36" />     <!-- model -->
+          <col class="w-56" />     <!-- model -->
           <col />                  <!-- prompt/error -->
           <col class="w-40" />     <!-- params -->
           <col class="w-14" />     <!-- cost -->
@@ -247,7 +247,7 @@ const params = (e) => {
               <div v-if="e.account" class="mt-0.5 text-[11px] text-slate-400 truncate" :title="e.account">{{ e.account }}</div>
             </td>
             <td class="px-3 py-3 align-middle min-w-0">
-              <div class="font-mono text-xs text-slate-800 truncate" :title="e.model">{{ e.model }}</div>
+              <div class="font-mono text-xs text-slate-800 break-all" :title="e.model">{{ e.model }}</div>
               <div class="mt-0.5 flex items-center gap-1.5">
                 <span class="text-[10px] uppercase tracking-wider font-medium"
                       :class="e.kind === 'video' ? 'text-fuchsia-600' : 'text-indigo-600'">
