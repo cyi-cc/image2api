@@ -226,7 +226,7 @@ onUnmounted(() => {
         <!-- hover actions (only when there's a file) -->
         <div v-if="e.status === 'success' && e.file"
              class="absolute top-3 right-3 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button v-if="e.kind !== 'video'" @click.stop.prevent="copyImage(thumbUrl(e.file))" title="复制缩略图"
+          <button v-if="e.kind !== 'video'" @click.stop.prevent="copyImage(generatedUrl(e.file))" title="复制图片"
                   class="w-7 h-7 rounded-lg bg-black/50 ring-1 ring-white/10 hover:bg-black/70 text-white grid place-items-center">
             <Icon name="copy" class="w-3.5 h-3.5" />
           </button>

@@ -712,7 +712,7 @@ onUnmounted(() => {
             <!-- hover action: 上参考图. Image → use as reference; video → 末帧设为首帧
                  (only shown when the model supports 首尾帧). Clicking the media zooms. -->
             <div class="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button v-if="item.kind !== 'video'" @click.stop.prevent="copyImage(item.url + '.thumb.jpg')" title="复制缩略图"
+              <button v-if="item.kind !== 'video'" @click.stop.prevent="copyImage(item.url)" title="复制图片"
                       class="w-7 h-7 rounded-lg bg-black/50 ring-1 ring-white/10 hover:bg-black/70 text-white grid place-items-center">
                 <Icon name="copy" class="w-3.5 h-3.5" />
               </button>
