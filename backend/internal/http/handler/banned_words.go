@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strings"
 
 	"backend/internal/repo"
 	"github.com/gin-gonic/gin"
@@ -49,6 +50,31 @@ func (h *BannedWordsHandler) Create(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"id": item.ID, "word": item.Word, "hits": item.Hits, "created_at": item.CreatedAt}})
+}
+
+// Import bulk-adds words from a free-form text blob — split on newlines,
+// commas (英文/中文), 顿号 and semicolons — skipping blanks and existing entries.
+func (h *BannedWordsHandler) Import(c *gin.Context) {
+	var body struct {
+		Text string `json:"text"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.Text) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "请提供要导入的违禁词"})
+		return
+	}
+	words := strings.FieldsFunc(body.Text, func(r rune) bool {
+		switch r {
+		case '\n', '\r', ',', '，', '、', ';', '；':
+			return true
+		}
+		return false
+	})
+	added, skipped, err := h.words.BulkCreate(c.Request.Context(), words)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "导入失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"added": added, "skipped": skipped})
 }
 
 func (h *BannedWordsHandler) Delete(c *gin.Context) {

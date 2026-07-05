@@ -21,7 +21,7 @@ func NewBannedWordRepository(db *gorm.DB) *BannedWordRepository {
 
 func (r *BannedWordRepository) List(ctx context.Context) ([]model.BannedWord, error) {
 	var items []model.BannedWord
-	err := r.db.WithContext(ctx).Order("hits DESC, created_at DESC").Find(&items).Error
+	err := r.db.WithContext(ctx).Order("created_at DESC, hits DESC").Find(&items).Error
 	return items, err
 }
 
@@ -40,6 +40,43 @@ func (r *BannedWordRepository) Create(ctx context.Context, word string) (*model.
 		return nil, errors.New("添加失败(可能已存在)")
 	}
 	return item, nil
+}
+
+// BulkCreate inserts the given words, skipping blanks and ones already in the
+// table (case-insensitive). Returns how many were added vs skipped.
+func (r *BannedWordRepository) BulkCreate(ctx context.Context, words []string) (added, skipped int, err error) {
+	existing, err := r.List(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
+	seen := make(map[string]bool, len(existing))
+	for _, w := range existing {
+		seen[strings.ToLower(w.Word)] = true
+	}
+	for _, w := range words {
+		w = strings.TrimSpace(w)
+		if w == "" {
+			continue
+		}
+		key := strings.ToLower(w)
+		if seen[key] {
+			skipped++
+			continue
+		}
+		item := &model.BannedWord{
+			ID:        strings.ReplaceAll(uuid.NewString(), "-", "")[:32],
+			Word:      w,
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		if e := r.db.WithContext(ctx).Create(item).Error; e != nil {
+			skipped++
+			continue
+		}
+		seen[key] = true
+		added++
+	}
+	return added, skipped, nil
 }
 
 func (r *BannedWordRepository) Delete(ctx context.Context, id string) (int64, error) {

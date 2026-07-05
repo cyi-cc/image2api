@@ -25,6 +25,24 @@ async function add() {
   else flash(r.data?.detail || '添加失败')
 }
 
+// bulk import — paste words separated by newlines / commas / 、 / ;
+const importOpen = ref(false)
+const importText = ref('')
+const importing = ref(false)
+async function doImport() {
+  const text = importText.value.trim()
+  if (!text) { flash('请先粘贴要导入的违禁词'); return }
+  importing.value = true
+  const r = await api('/banned-words/import', jsonBody('POST', { text }))
+  importing.value = false
+  if (r.ok) {
+    importOpen.value = false
+    importText.value = ''
+    flash(`导入完成：新增 ${r.data?.added ?? 0} 个，跳过 ${r.data?.skipped ?? 0} 个`) 
+    load()
+  } else flash(r.data?.detail || '导入失败')
+}
+
 async function del(w) {
   if (!confirm(`删除违禁词「${w.word}」?`)) return
   const r = await api(`/banned-words/${w.id}`, { method: 'DELETE' })
@@ -104,6 +122,7 @@ onMounted(load)
         </button>
         <input v-model="newWord" @keyup.enter="add" class="field !py-1.5 text-xs w-52" placeholder="输入违禁词后回车" />
         <button @click="add" class="btn-primary shrink-0">+ 添加</button>
+        <button @click="importOpen = true" class="btn-soft shrink-0">批量导入</button>
       </div>
     </div>
 
@@ -143,6 +162,18 @@ onMounted(load)
             <span v-if="n === null" class="px-1 text-white/30">…</span>
             <button v-else @click="goPage(n)" class="pg" :class="page === n && 'pg-on'">{{ n }}</button>
           </template>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="importOpen" class="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4" @click.self="importOpen = false">
+      <div class="card w-full max-w-lg p-5 space-y-3">
+        <h3 class="text-sm font-semibold">批量导入违禁词</h3>
+        <p class="text-xs text-white/45">每行一个，或用逗号、顿号、分号分隔；已存在的词会自动跳过。</p>
+        <textarea v-model="importText" rows="8" class="field w-full text-xs font-mono resize-y" placeholder="违禁词1&#10;违禁词2&#10;违禁词3"></textarea>
+        <div class="flex justify-end gap-2">
+          <button @click="importOpen = false" class="btn-soft">取消</button>
+          <button @click="doImport" :disabled="importing" class="btn-primary">{{ importing ? '导入中…' : '导入' }}</button>
         </div>
       </div>
     </div>
