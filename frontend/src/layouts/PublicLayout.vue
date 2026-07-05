@@ -88,7 +88,7 @@ const currentLabel = computed(() => {
         </button>
         <router-link to="/settings" title="设置" @click="onSettings"
                      :class="$route.path === '/settings' ? 'rail-bottom active' : 'rail-bottom'">
-          <Icon name="accounts" class="w-4 h-4" />
+          <Icon name="config" class="w-4 h-4" />
         </router-link>
       </div>
     </aside>

@@ -429,7 +429,7 @@ func (s *AdminReadService) Images(ctx context.Context, limit, offset int, kind s
 	if offset < 0 {
 		offset = 0
 	}
-	allFiles, stats, err := s.scanGeneratedFiles(ctx)
+	allFiles, _, err := s.scanGeneratedFiles(ctx)
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -441,11 +441,19 @@ func (s *AdminReadService) Images(ctx context.Context, limit, offset int, kind s
 			pinned = set
 		}
 	}
+	// KPI stats must reflect what the manager actually shows, so recompute them
+	// after dropping showcase files (independent of the kind tab filter).
+	stats := map[string]any{"total": 0, "image": 0, "video": 0, "size_bytes": int64(0)}
 	filtered := make([]generatedFile, 0, len(allFiles))
 	for _, item := range allFiles {
 		if _, ok := pinned[strings.TrimLeft(item.Name, "/")]; ok {
 			continue
 		}
+		if _, ok := stats[item.Kind]; ok {
+			stats[item.Kind] = stats[item.Kind].(int) + 1
+		}
+		stats["total"] = stats["total"].(int) + 1
+		stats["size_bytes"] = stats["size_bytes"].(int64) + item.Size
 		if kind == "" || item.Kind == kind {
 			filtered = append(filtered, item)
 		}
