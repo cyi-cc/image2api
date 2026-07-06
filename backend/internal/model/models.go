@@ -48,12 +48,12 @@ type BannedWord struct {
 // BannedWordHit records one blocked request: which word matched, who sent it,
 // and when. Feeds the admin 违禁词触发列表.
 type BannedWordHit struct {
-	ID        string `gorm:"primaryKey;size:32"`
-	WordID    string `gorm:"size:32;index"`
-	Word      string `gorm:"size:255;index;not null"`
-	UserID    string `gorm:"size:32;index"`
-	UserName  string `gorm:"size:255"` // snapshot of name/email at hit time
-	Prompt    string `gorm:"type:text"`
+	ID        string    `gorm:"primaryKey;size:32"`
+	WordID    string    `gorm:"size:32;index"`
+	Word      string    `gorm:"size:255;index;not null"`
+	UserID    string    `gorm:"size:32;index"`
+	UserName  string    `gorm:"size:255"` // snapshot of name/email at hit time
+	Prompt    string    `gorm:"type:text"`
 	CreatedAt time.Time `gorm:"index"`
 }
 
@@ -99,9 +99,13 @@ type EventLog struct {
 	// stamped when the upstream call begins. Drives the accounts view's live
 	// in-flight count (pending events per account) and lets an abandoned-event
 	// purge attribute the failure back to the account it was using.
-	AccountID string  `gorm:"size:64;index"`
-	UserID    string  `gorm:"size:32;index"`
-	Cost      float64 `gorm:"not null;default:0"`
+	AccountID string `gorm:"size:64;index"`
+	// AccountEmail denormalizes the account's email at stamp time, so log rows
+	// keep showing which mailbox fulfilled the generation even after the account
+	// is deleted or re-imported under a different ID.
+	AccountEmail string  `gorm:"size:255"`
+	UserID       string  `gorm:"size:32;index"`
+	Cost         float64 `gorm:"not null;default:0"`
 	// Refunded marks that this event's up-front charge has already been credited
 	// back, so the normal failure path and the abandoned-purge sweep can never
 	// double-refund the same generation.

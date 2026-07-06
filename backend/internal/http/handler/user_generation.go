@@ -284,7 +284,10 @@ func (h *UserGenerationHandler) Logs(c *gin.Context) {
 		// which upstream account (email) fulfilled their generation.
 		var accountName, accountID any
 		if userID == "" {
-			if item.AccountID != "" {
+			if item.AccountEmail != "" {
+				// Email stamped on the row itself survives account deletion/re-import.
+				accountName = item.AccountEmail
+			} else if item.AccountID != "" {
 				if label, ok := accountByID[item.AccountID]; ok {
 					accountName = label
 				} else {

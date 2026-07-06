@@ -600,11 +600,11 @@ func (r *EventRepository) MarkRefunded(ctx context.Context, eventID string) (boo
 // SetAccount stamps which provider account is fulfilling an in-flight event.
 // Called when generation commits to a token, so the accounts view can count
 // pending events per account and an abandoned-event purge can attribute back.
-func (r *EventRepository) SetAccount(ctx context.Context, eventID, accountID string) error {
+func (r *EventRepository) SetAccount(ctx context.Context, eventID, accountID, accountEmail string) error {
 	return r.db.WithContext(ctx).
 		Model(&model.EventLog{}).
 		Where("id = ?", eventID).
-		Update("account_id", accountID).Error
+		Updates(map[string]any{"account_id": accountID, "account_email": accountEmail}).Error
 }
 
 // InFlightByAccount counts pending (in-flight) events grouped by account_id, for

@@ -108,7 +108,10 @@ func (h *AdminReadHandler) Logs(c *gin.Context) {
 			userName = item.UserID
 		}
 		var accountName any
-		if item.AccountID != "" {
+		if item.AccountEmail != "" {
+			// Email stamped on the row itself survives account deletion/re-import.
+			accountName = item.AccountEmail
+		} else if item.AccountID != "" {
 			if label, ok := accountByID[item.AccountID]; ok {
 				accountName = label
 			} else {

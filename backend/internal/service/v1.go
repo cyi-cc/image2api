@@ -1457,7 +1457,7 @@ func (s *V1Service) tryAccount(ctx context.Context, eventID, pool string, token 
 	refreshOnAuth func(tokenID string) (model.TokenAccount, bool),
 	tempFailover bool,
 ) ([]byte, error, bool, bool) {
-	_ = s.events.SetAccount(ctx, eventID, token.ID)
+	_ = s.events.SetAccount(ctx, eventID, token.ID, token.AccountEmail)
 	_ = s.tokens.TouchLastUsed(ctx, token.ID)
 	authRefreshed := false
 	tempAttempts := 0
@@ -1711,7 +1711,7 @@ func (s *V1Service) generateRunwayVideo(ctx context.Context, eventID string, mod
 		var data []byte
 		done, failover := func() (bool, bool) {
 			defer s.acctRelease(ctx, token.ID, eventID)
-			_ = s.events.SetAccount(ctx, eventID, token.ID)
+			_ = s.events.SetAccount(ctx, eventID, token.ID, token.AccountEmail)
 			_ = s.tokens.TouchLastUsed(ctx, token.ID)
 			teamID := ""
 			if token.Meta != nil {
@@ -1851,7 +1851,7 @@ func (s *V1Service) generateCustomImage(ctx context.Context, eventID string, mod
 		var data []byte
 		done, failover := func() (bool, bool) {
 			defer s.acctRelease(ctx, token.ID, eventID)
-			_ = s.events.SetAccount(ctx, eventID, token.ID)
+			_ = s.events.SetAccount(ctx, eventID, token.ID, token.AccountEmail)
 			_ = s.tokens.TouchLastUsed(ctx, token.ID)
 			baseURL := stringValue(token.Meta["base_url"])
 			d, genErr := s.custom.GenerateImage(ctx, baseURL, token.Value, modelItem.ID, in.Prompt, size, quality, refs)
@@ -1919,7 +1919,7 @@ func (s *V1Service) generateCustomVideo(ctx context.Context, eventID string, mod
 		var data []byte
 		done, failover := func() (bool, bool) {
 			defer s.acctRelease(ctx, token.ID, eventID)
-			_ = s.events.SetAccount(ctx, eventID, token.ID)
+			_ = s.events.SetAccount(ctx, eventID, token.ID, token.AccountEmail)
 			_ = s.tokens.TouchLastUsed(ctx, token.ID)
 			baseURL := stringValue(token.Meta["base_url"])
 			d, url, genErr := s.custom.GenerateVideo(ctx, baseURL, token.Value, modelItem.ID, in.Prompt, size, durationSeconds, downloadResult)
@@ -2091,7 +2091,7 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 		var data []byte
 		done, failover := func() (bool, bool) {
 			defer s.acctRelease(ctx, token.ID, eventID)
-			_ = s.events.SetAccount(ctx, eventID, token.ID)
+			_ = s.events.SetAccount(ctx, eventID, token.ID, token.AccountEmail)
 			_ = s.tokens.TouchLastUsed(ctx, token.ID)
 			d, meta, genErr := s.grok.GenerateVideo(ctx, token.Value, in.Prompt, aspectRatio, res, durationSeconds, frames, downloadResult)
 			if genErr == nil {
@@ -2193,7 +2193,7 @@ func (s *V1Service) generateRunwayImage(ctx context.Context, eventID string, mod
 		var data []byte
 		done, failover := func() (bool, bool) {
 			defer s.acctRelease(ctx, token.ID, eventID)
-			_ = s.events.SetAccount(ctx, eventID, token.ID)
+			_ = s.events.SetAccount(ctx, eventID, token.ID, token.AccountEmail)
 			_ = s.tokens.TouchLastUsed(ctx, token.ID)
 			teamID := ""
 			if token.Meta != nil {
