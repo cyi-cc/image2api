@@ -5,6 +5,7 @@ import { fmtTs, fmtIso, fmtDate, fmtClock } from '../utils/format'
 import ImportModal from '../components/ImportModal.vue'
 import UpstreamModal from '../components/UpstreamModal.vue'
 import AccountEditModal from '../components/AccountEditModal.vue'
+import AccountTestModal from '../components/AccountTestModal.vue'
 import Icon from '../components/Icon.vue'
 
 const rows = ref([])
@@ -16,6 +17,14 @@ const editingUpstream = ref(null)
 function editUpstream(a) { editingUpstream.value = a; showUpstream.value = true }
 const editingAccount = ref(null)
 function editAccount(a) { editingAccount.value = a }
+const testingAccount = ref(null)
+function testAccount(a) { testingAccount.value = a }
+// 预加载模型列表，让「生图测试」弹窗即开即用(不显示加载中)。
+const allModels = ref([])
+async function loadModelList() {
+  const r = await api('/managed-models')
+  allModels.value = r.data?.data || []
+}
 // Reflect the saved values in the table without a full reload.
 function applyEdit(payload) {
   const row = editingAccount.value
@@ -299,7 +308,7 @@ async function deleteSelected() {
   }
 }
 
-onMounted(loadAccounts)
+onMounted(() => { loadAccounts(); loadModelList() })
 </script>
 
 <template>
@@ -391,7 +400,7 @@ onMounted(loadAccounts)
         <button v-if="!rows.length" @click="showImport = true" class="btn-soft mt-1">导入第一个</button>
       </div>
 
-      <table v-else class="w-full text-sm table-fixed min-w-[1040px]">
+      <table v-else class="w-full text-sm table-fixed min-w-[1080px]">
         <colgroup>
           <col class="w-9" />      <!-- select -->
           <col />                  <!-- identity (flex) -->
@@ -404,7 +413,7 @@ onMounted(loadAccounts)
           <col class="w-28" />     <!-- last used -->
           <col class="w-40" />     <!-- inflight/success/fail -->
           <col class="w-16" />     <!-- status switch -->
-          <col class="w-24" />     <!-- actions -->
+          <col class="w-32" />     <!-- actions -->
         </colgroup>
         <thead>
           <tr class="text-[10px] uppercase tracking-[0.2em] text-white/40 border-b border-white/[0.06]">
@@ -523,6 +532,9 @@ onMounted(loadAccounts)
             <!-- actions -->
             <td class="px-3 py-3.5 align-middle whitespace-nowrap">
               <div class="flex items-center justify-end gap-2">
+                <button @click="testAccount(a)" class="act" title="生图测试">
+                  <Icon name="spark" class="w-3.5 h-3.5" />
+                </button>
                 <button v-if="a.type !== 'custom'" @click="editAccount(a)" class="act" title="编辑">
                   <Icon name="config" class="w-3.5 h-3.5" />
                 </button>
@@ -557,6 +569,7 @@ onMounted(loadAccounts)
     <ImportModal v-if="showImport" @close="showImport = false" @imported="loadAccounts" />
     <UpstreamModal v-if="showUpstream" :account="editingUpstream" @close="showUpstream = false; editingUpstream = null" @imported="loadAccounts" />
     <AccountEditModal v-if="editingAccount" :account="editingAccount" @saved="applyEdit" @close="editingAccount = null" />
+    <AccountTestModal v-if="testingAccount" :account="testingAccount" :all-models="allModels" @close="testingAccount = null" />
   </section>
 </template>
 

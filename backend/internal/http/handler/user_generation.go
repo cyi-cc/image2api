@@ -130,6 +130,7 @@ func (h *UserGenerationHandler) Test(c *gin.Context) {
 		Resolution      string   `json:"resolution"`
 		Duration        string   `json:"duration"`
 		ReferenceImages []string `json:"reference_images"`
+		AccountID       string   `json:"account_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request body"})
@@ -143,6 +144,7 @@ func (h *UserGenerationHandler) Test(c *gin.Context) {
 		Resolution:      body.Resolution,
 		Duration:        body.Duration,
 		ReferenceImages: body.ReferenceImages,
+		AccountID:       body.AccountID,
 	})
 	if err != nil {
 		switch {

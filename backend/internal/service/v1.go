@@ -203,6 +203,9 @@ type V1ImageRequest struct {
 	// used to build absolute, directly-downloadable output URLs. Empty falls
 	// back to a relative "/images/..." path.
 	BaseURL string
+	// AccountID pins the generation to one specific provider account (admin
+	// account-test). Empty keeps the normal pool selection with failover.
+	AccountID string
 }
 
 type V1VideoRequest struct {
@@ -214,6 +217,8 @@ type V1VideoRequest struct {
 	ReferenceImages []string
 	// BaseURL — see V1ImageRequest.BaseURL.
 	BaseURL string
+	// AccountID — see V1ImageRequest.AccountID.
+	AccountID string
 }
 
 func NewV1Service(cfg *config.Config, models *repo.ModelRepository, users *repo.UserRepository, events *repo.EventRepository, tokens *repo.TokenRepository, settings *repo.SiteSettingRepository, cgroups *repo.ConcurrencyGroupRepository, conc *ConcurrencyService, adobeClient *adobe.Client, chatGPTClient *chatgpt.Client, runwayClient *runway.Client, leonardoClient *leonardo.Client, kreaClient *krea.Client, imagineClient *imagine.Client, grokClient *grok.Client, customClient *custom.Client, store *storage.Client) *V1Service {
@@ -1547,6 +1552,7 @@ func (s *V1Service) generateAdobeImage(ctx context.Context, eventID string, mode
 			active = append(active, item)
 		}
 	}
+	active = pinTestAccount(items, active, in.AccountID)
 	if len(active) == 0 {
 		return nil, ErrNoProviderAccount
 	}
@@ -1602,6 +1608,7 @@ func (s *V1Service) generateAdobeVideo(ctx context.Context, eventID string, mode
 			active = append(active, item)
 		}
 	}
+	active = pinTestAccount(items, active, in.AccountID)
 	if len(active) == 0 {
 		return nil, "", ErrNoProviderAccount
 	}
@@ -1686,6 +1693,7 @@ func (s *V1Service) generateRunwayVideo(ctx context.Context, eventID string, mod
 		}
 		active = append(active, item)
 	}
+	active = pinTestAccount(items, active, in.AccountID)
 	if len(active) == 0 {
 		return nil, "", ErrNoProviderAccount
 	}
@@ -1827,6 +1835,7 @@ func (s *V1Service) generateCustomImage(ctx context.Context, eventID string, mod
 	if err != nil {
 		return nil, err
 	}
+	active = pinTestAccount(active, active, in.AccountID)
 	if len(active) == 0 {
 		return nil, ErrNoProviderAccount
 	}
@@ -1894,6 +1903,7 @@ func (s *V1Service) generateCustomVideo(ctx context.Context, eventID string, mod
 	if err != nil {
 		return nil, "", err
 	}
+	active = pinTestAccount(active, active, in.AccountID)
 	if len(active) == 0 {
 		return nil, "", ErrNoProviderAccount
 	}
@@ -2058,6 +2068,7 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 		}
 		active = append(active, item)
 	}
+	active = pinTestAccount(items, active, in.AccountID)
 	if len(active) == 0 {
 		return nil, "", ErrNoProviderAccount
 	}
@@ -2161,6 +2172,7 @@ func (s *V1Service) generateRunwayImage(ctx context.Context, eventID string, mod
 		}
 		active = append(active, item)
 	}
+	active = pinTestAccount(items, active, in.AccountID)
 	if len(active) == 0 {
 		return nil, ErrNoProviderAccount
 	}
@@ -2281,6 +2293,7 @@ func (s *V1Service) generateChatGPTImage(ctx context.Context, eventID string, mo
 			active = append(active, item)
 		}
 	}
+	active = pinTestAccount(items, active, in.AccountID)
 	if len(active) == 0 {
 		return nil, ErrNoProviderAccount
 	}
@@ -2387,6 +2400,7 @@ func (s *V1Service) generateLeonardoImage(ctx context.Context, eventID string, m
 		}
 		active = append(active, item)
 	}
+	active = pinTestAccount(items, active, in.AccountID)
 	if len(active) == 0 {
 		return nil, ErrNoProviderAccount
 	}
@@ -2538,6 +2552,7 @@ func (s *V1Service) generateKreaImage(ctx context.Context, eventID string, model
 			active = append(active, item)
 		}
 	}
+	active = pinTestAccount(items, active, in.AccountID)
 	if len(active) == 0 {
 		return nil, ErrNoProviderAccount
 	}
@@ -2614,6 +2629,7 @@ func (s *V1Service) generateImagineImage(ctx context.Context, eventID string, mo
 			active = append(active, item)
 		}
 	}
+	active = pinTestAccount(items, active, in.AccountID)
 	if len(active) == 0 {
 		return nil, ErrNoProviderAccount
 	}
@@ -3110,6 +3126,23 @@ func (s *V1Service) nextCursor(pool string) uint64 {
 // cycles in fixed order regardless of fails or last_used. The fall-through
 // retry chain is preserved — on failure the caller's loop simply continues to
 // the next account in rotation order.
+// pinTestAccount narrows account selection to the single account requested by
+// an admin 账号生图测试. The pinned account is taken from the pool's full list
+// (bypassing active/dead/limited filters) so a limited or disabled account can
+// still be probed. Returns nil when the account isn't in this pool.
+func pinTestAccount(items, active []model.TokenAccount, accountID string) []model.TokenAccount {
+	id := strings.TrimSpace(accountID)
+	if id == "" {
+		return active
+	}
+	for _, item := range items {
+		if item.ID == id && strings.TrimSpace(item.Value) != "" {
+			return []model.TokenAccount{item}
+		}
+	}
+	return nil
+}
+
 func (s *V1Service) rotateRoundRobin(pool string, items []model.TokenAccount) {
 	if len(items) <= 1 {
 		return

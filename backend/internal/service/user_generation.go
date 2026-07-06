@@ -33,6 +33,8 @@ type UserGenerateRequest struct {
 	Resolution      string
 	Duration        string
 	ReferenceImages []string
+	// AccountID pins an admin test to one specific provider account (账号生图测试).
+	AccountID string
 }
 
 func (s *UserGenerationService) Generate(ctx context.Context, user *model.User, in UserGenerateRequest) (map[string]any, error) {
@@ -102,6 +104,7 @@ func (s *UserGenerationService) AdminTest(ctx context.Context, user *model.User,
 			AspectRatio:     in.Ratio,
 			Resolution:      in.Resolution,
 			ReferenceImages: in.ReferenceImages,
+			AccountID:       in.AccountID,
 		})
 	default:
 		return s.v1.prepareAdminTestImage(ctx, principal, V1ImageRequest{
@@ -110,6 +113,7 @@ func (s *UserGenerationService) AdminTest(ctx context.Context, user *model.User,
 			AspectRatio:     in.Ratio,
 			Resolution:      in.Resolution,
 			ReferenceImages: in.ReferenceImages,
+			AccountID:       in.AccountID,
 		})
 	}
 }
