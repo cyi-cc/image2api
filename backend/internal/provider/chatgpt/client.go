@@ -14,6 +14,7 @@ import (
 	"io"
 	stdhttp "net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -878,6 +879,9 @@ func (c *Client) getConversation(ctx context.Context, session tlsclient.HttpClie
 	}
 	if err := ensureOK(resp.StatusCode, body, "conversation_get"); err != nil {
 		return nil, err
+	}
+	if dir := os.Getenv("CHATGPT_DEBUG_DUMP"); dir != "" {
+		_ = os.WriteFile(filepath.Join(dir, fmt.Sprintf("conv-%s-%d.json", conversationID, time.Now().UnixMilli())), body, 0o644)
 	}
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {

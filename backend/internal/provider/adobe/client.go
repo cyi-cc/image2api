@@ -38,15 +38,6 @@ var (
 	ErrDeadUpstream      = errors.New("adobe upstream fatal error")
 )
 
-// bodyHasInsufficientCredits reports whether an Adobe response body signals the
-// account has run out of generation credits ("insufficient credits"). Such an
-// account is out of quota for this kind of generation, so it's treated as
-// ErrQuotaExhausted: the pool marks it 限额 (per image/video kind) and fails over
-// to the next account instead of surfacing a hard error to the caller.
-func bodyHasInsufficientCredits(body []byte) bool {
-	return strings.Contains(strings.ToLower(string(body)), "insufficient credit")
-}
-
 var profileURLs = []string{
 	"https://ims-na1.adobelogin.com/ims/profile/v1",
 	"https://adobeid-na1.services.adobe.com/ims/profile/v1",
@@ -468,9 +459,6 @@ func (c *Client) submitImage(ctx context.Context, client tlsclient.HttpClient, t
 	if err != nil {
 		return nil, "", err
 	}
-	if bodyHasInsufficientCredits(respBody) {
-		return respBody, "", ErrQuotaExhausted
-	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
 		if strings.EqualFold(resp.Header.Get("x-access-error"), "taste_exhausted") {
 			return respBody, "", ErrQuotaExhausted
@@ -544,9 +532,6 @@ func (c *Client) pollImage(ctx context.Context, client tlsclient.HttpClient, tok
 		resp.Body.Close()
 		if readErr != nil {
 			return nil, nil, readErr
-		}
-		if bodyHasInsufficientCredits(body) {
-			return nil, nil, ErrQuotaExhausted
 		}
 		if b := string(body); strings.Contains(b, "system under load") || strings.Contains(b, "timeout_error") {
 			return nil, nil, ErrTemporaryUpstream
@@ -646,9 +631,6 @@ func (c *Client) submitVideo(ctx context.Context, client tlsclient.HttpClient, t
 	if err != nil {
 		return nil, "", err
 	}
-	if bodyHasInsufficientCredits(respBody) {
-		return respBody, "", ErrQuotaExhausted
-	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
 		if strings.EqualFold(resp.Header.Get("x-access-error"), "taste_exhausted") {
 			return respBody, "", ErrQuotaExhausted
@@ -724,9 +706,6 @@ func (c *Client) pollVideo(ctx context.Context, client tlsclient.HttpClient, tok
 		resp.Body.Close()
 		if readErr != nil {
 			return nil, nil, readErr
-		}
-		if bodyHasInsufficientCredits(body) {
-			return nil, nil, ErrQuotaExhausted
 		}
 		if resp.StatusCode == 401 || resp.StatusCode == 403 {
 			return nil, nil, fmt.Errorf("%w (%d %s: %s)", ErrAuth, resp.StatusCode, resp.Header.Get("x-access-error"), clip(body, 300))

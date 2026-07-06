@@ -157,8 +157,12 @@ func conversationEndedWithoutImage(conversation map[string]any) bool {
 		}
 		if role == "assistant" {
 			if content, _ := message["content"].(map[string]any); content != nil {
-				if ct := stringValue(content["content_type"]); ct != "" && ct != "text" {
-					return false // code/multimodal turn — generation underway
+				// Only tool-invoking content types mean generation is underway.
+				// Context nodes (model_editable_context, thoughts, …) also appear
+				// on refused turns and must NOT suppress the detection.
+				switch stringValue(content["content_type"]) {
+				case "code", "multimodal_text":
+					return false
 				}
 			}
 		}
