@@ -81,7 +81,7 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 	}
 
 	userAuthed := engine.Group("/admin/api")
-	userAuthed.Use(middleware.RequireSession(auth))
+	userAuthed.Use(middleware.RequireSession(auth, cfg))
 	{
 		userAuthed.GET("/logs", handlers.UserGen.Logs)
 		userAuthed.POST("/generate", handlers.UserGen.Generate)
@@ -99,7 +99,7 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 	}
 
 	authed := engine.Group("/admin/api")
-	authed.Use(middleware.RequireAdminSession(auth))
+	authed.Use(middleware.RequireAdminSession(auth, cfg))
 	{
 		authed.GET("/dashboard", handlers.AdminRead.Dashboard)
 		authed.GET("/users", handlers.AdminRead.Users)
@@ -186,7 +186,7 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 		}
 	}
 
-	authGroup.Use(middleware.RequireSession(auth))
+	authGroup.Use(middleware.RequireSession(auth, cfg))
 	{
 		authGroup.GET("/me", handlers.Auth.Me)
 		authGroup.GET("/invites", handlers.Auth.Invites)
