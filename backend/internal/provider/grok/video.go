@@ -54,7 +54,13 @@ func (c *Client) GenerateVideo(ctx context.Context, token, prompt, aspectRatio, 
 		seconds = 10
 	}
 
-	client, err := c.newTLSClient()
+	// Only the conversations/new submit egresses via the proxy; reference-frame
+	// upload and the mp4 download run on the local IP.
+	submitClient, err := c.newTLSClient()
+	if err != nil {
+		return nil, nil, err
+	}
+	directClient, err := c.newDirectTLSClient()
 	if err != nil {
 		return nil, nil, err
 	}
@@ -65,7 +71,7 @@ func (c *Client) GenerateVideo(ctx context.Context, token, prompt, aspectRatio, 
 		if len(f) == 0 {
 			continue
 		}
-		url, upErr := c.uploadImage(ctx, client, token, f)
+		url, upErr := c.uploadImage(ctx, directClient, token, f)
 		if upErr != nil {
 			return nil, nil, upErr
 		}
@@ -87,7 +93,7 @@ func (c *Client) GenerateVideo(ctx context.Context, token, prompt, aspectRatio, 
 		if ctx.Err() != nil {
 			return nil, nil, ctx.Err()
 		}
-		pid, cpErr := c.createPost(ctx, client, token, prompt)
+		pid, cpErr := c.createPost(ctx, submitClient, token, prompt)
 		if cpErr != nil {
 			lastErr = cpErr
 			continue
@@ -116,7 +122,7 @@ func (c *Client) GenerateVideo(ctx context.Context, token, prompt, aspectRatio, 
 			},
 		}
 
-		body, psErr := c.postStream(ctx, client, token, "/rest/app-chat/conversations/new", payload)
+		body, psErr := c.postStream(ctx, submitClient, token, "/rest/app-chat/conversations/new", payload)
 		if psErr != nil {
 			// Transient HTTP/2 stream resets etc. — retry.
 			lastErr = psErr
@@ -169,7 +175,7 @@ func (c *Client) GenerateVideo(ctx context.Context, token, prompt, aspectRatio, 
 	if !downloadResult {
 		return nil, meta, nil
 	}
-	data, err := c.download(ctx, client, token, fullURL)
+	data, err := c.download(ctx, directClient, token, fullURL)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -342,7 +348,8 @@ func (c *Client) OpenAsset(ctx context.Context, token, url string) (io.ReadClose
 	if token == "" {
 		return nil, "", ErrAuth
 	}
-	client, err := c.newTLSClient()
+	// Asset streaming is pure bandwidth (no anti-bot) — egress on the local IP.
+	client, err := c.newDirectTLSClient()
 	if err != nil {
 		return nil, "", err
 	}

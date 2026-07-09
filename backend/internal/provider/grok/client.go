@@ -689,7 +689,14 @@ func (c *Client) applyHeaders(req *http.Request, token string, extra map[string]
 	req.Header = h
 }
 
-func (c *Client) newTLSClient() (tlsclient.HttpClient, error) {
+func (c *Client) newTLSClient() (tlsclient.HttpClient, error) { return c.newTLSClientP(true) }
+
+// newDirectTLSClient egresses on the local IP (never the proxy). Used for
+// reference-frame upload and result (video) download; only the generate submit
+// (/rest/app-chat/conversations/new) uses the proxy.
+func (c *Client) newDirectTLSClient() (tlsclient.HttpClient, error) { return c.newTLSClientP(false) }
+
+func (c *Client) newTLSClientP(useProxy bool) (tlsclient.HttpClient, error) {
 	options := []tlsclient.HttpClientOption{
 		// Video generation streams inline until progress=100; a 15s clip can take
 		// several minutes, so allow up to 10m (caller's genCtx caps at 12m).
@@ -697,7 +704,7 @@ func (c *Client) newTLSClient() (tlsclient.HttpClient, error) {
 		tlsclient.WithClientProfile(profiles.Chrome_133),
 		tlsclient.WithRandomTLSExtensionOrder(),
 	}
-	if c.proxy != "" {
+	if useProxy && c.proxy != "" {
 		options = append(options, tlsclient.WithProxyUrl(c.proxy))
 	}
 	return tlsclient.NewHttpClient(tlsclient.NewNoopLogger(), options...)
