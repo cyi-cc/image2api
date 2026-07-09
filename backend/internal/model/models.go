@@ -93,6 +93,7 @@ type EventLog struct {
 	Resolution string         `gorm:"size:32"`
 	Duration   string         `gorm:"size:32"`
 	Refs       int            `gorm:"not null;default:0"`
+	DeAI       bool           `gorm:"not null;default:false"` // 去AI特征 was applied (image only)
 	RefFiles   datatypes.JSON `gorm:"type:jsonb"` // relative paths of saved reference images, for回显 on reload
 	Source     string         `gorm:"size:32;index"`
 	// AccountID is the provider token/account chosen to fulfil this generation,

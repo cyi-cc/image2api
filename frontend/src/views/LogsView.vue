@@ -325,6 +325,10 @@ const sourcePill = (s) => ({
                 <span class="text-white/25 mx-1.5">·</span>
                 <span class="text-white/40">参考 {{ e.refs }}</span>
               </template>
+              <template v-if="e.deai">
+                <span class="text-white/25 mx-1.5">·</span>
+                <span class="text-violet-300/70">去AI特征</span>
+              </template>
             </td>
             <td class="px-3 py-3.5 text-right text-xs tabular-nums align-middle whitespace-nowrap">
               <span v-if="e.cost > 0" class="text-amber-300 font-medium">{{ e.cost }}</span>

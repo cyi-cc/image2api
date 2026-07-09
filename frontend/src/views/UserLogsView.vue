@@ -360,6 +360,7 @@ onUnmounted(() => {
               <span v-if="e.resolution" class="text-emerald-300/90">{{ e.resolution }}</span>
               <span v-if="e.ratio" class="text-white/40">{{ e.ratio }}</span>
               <span v-if="e.kind === 'video' && e.duration" class="text-fuchsia-300/80">{{ e.duration }}</span>
+              <span v-if="e.deai" class="text-violet-300/80">去AI</span>
             </span>
           </div>
           <div class="text-[10px] text-white/35 mt-0.5 tabular-nums">{{ fmtTs(e.ts) }}<span v-if="e.elapsed_ms"> · {{ fmtMs(e.elapsed_ms) }}</span></div>
@@ -387,7 +388,7 @@ onUnmounted(() => {
       :src="generatedUrl(lightbox.file)"
       :kind="lightbox.kind"
       :prompt="lightbox.prompt"
-      :meta="[lightbox.model, lightbox.ratio, lightbox.resolution, lightbox.duration, fmtMs(lightbox.elapsed_ms)].filter(Boolean).join(' · ')"
+      :meta="[lightbox.model, lightbox.ratio, lightbox.resolution, lightbox.duration, (lightbox.deai ? '去AI特征' : ''), fmtMs(lightbox.elapsed_ms)].filter(Boolean).join(' · ')"
       :download-name="lightbox.file"
       @close="lightbox = null" />
 

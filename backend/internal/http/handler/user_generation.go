@@ -310,6 +310,7 @@ func (h *UserGenerationHandler) Logs(c *gin.Context) {
 			"resolution": item.Resolution,
 			"duration":   item.Duration,
 			"refs":       item.Refs,
+			"deai":       item.DeAI,
 			"source":     emptyStringNil(item.Source),
 			"user_id":    emptyStringNil(item.UserID),
 			"user_name":  userName,

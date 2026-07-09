@@ -546,6 +546,7 @@ func (s *AdminReadService) Images(ctx context.Context, limit, offset int, kind s
 			"resolution": "",
 			"ratio":      "",
 			"duration":   "",
+			"deai":       false,
 		}
 		if event, ok := index[item.Name]; ok {
 			row["prompt"] = event.Prompt
@@ -557,6 +558,7 @@ func (s *AdminReadService) Images(ctx context.Context, limit, offset int, kind s
 			row["resolution"] = event.Resolution
 			row["ratio"] = event.Ratio
 			row["duration"] = event.Duration
+			row["deai"] = event.DeAI
 		}
 		out = append(out, row)
 	}

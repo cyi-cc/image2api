@@ -171,6 +171,7 @@ func shapeJobEvent(item *model.EventLog, modelNames map[string]string) map[strin
 		"ratio":          item.Ratio,
 		"resolution":     item.Resolution,
 		"duration":       item.Duration,
+		"deai":           item.DeAI,
 		"status":         status,
 		"file":           emptyOrNil(item.File),
 		"url":            emptyOrNil(url),

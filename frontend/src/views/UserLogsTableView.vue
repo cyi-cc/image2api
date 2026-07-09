@@ -120,6 +120,7 @@ const params = (e) => {
   const parts = [e.ratio || '—', e.resolution || '—']
   if (e.duration) parts.push(e.duration)
   if (e.refs > 0) parts.push(`参考 ${e.refs}`)
+  if (e.deai) parts.push('去AI特征')
   return parts.join(' · ')
 }
 </script>

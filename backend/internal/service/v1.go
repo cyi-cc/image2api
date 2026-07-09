@@ -453,7 +453,7 @@ func (s *V1Service) prepareImageExecution(ctx context.Context, principal *APIPri
 	if !noStore {
 		fileURL, relativePath = s.allocateOutput(principal, "png", in.BaseURL)
 	}
-	eventID, err := s.logPendingEvent(ctx, "image", modelItem, principal, in.Prompt, aspectRatio, resolution, "", refCount, price, relativePath, source, refFiles)
+	eventID, err := s.logPendingEvent(ctx, "image", modelItem, principal, in.Prompt, aspectRatio, resolution, "", refCount, price, relativePath, source, refFiles, in.DeAI)
 	if err != nil {
 		s.cleanupReferenceImages(ctx, "", refFiles)
 		return nil, err
@@ -703,7 +703,7 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 	if !noStore {
 		fileURL, relativePath = s.allocateOutput(principal, "mp4", in.BaseURL)
 	}
-	eventID, err := s.logPendingEvent(ctx, "video", modelItem, principal, in.Prompt, aspectRatio, resolution, duration, refCount, price, relativePath, source, refFiles)
+	eventID, err := s.logPendingEvent(ctx, "video", modelItem, principal, in.Prompt, aspectRatio, resolution, duration, refCount, price, relativePath, source, refFiles, false)
 	if err != nil {
 		s.cleanupReferenceImages(ctx, "", refFiles)
 		return nil, err
@@ -825,7 +825,7 @@ func (s *V1Service) StartVideoJob(ctx context.Context, principal *APIPrincipal, 
 	refFiles := s.saveReferenceImages(ctx, principal, in.ReferenceImages)
 	// Source "v1": no output file is allocated — the result is the upstream URL,
 	// stored on the event when the render completes.
-	eventID, err := s.logPendingEvent(ctx, "video", modelItem, principal, in.Prompt, aspectRatio, resolution, duration, len(in.ReferenceImages), price, "", "v1", refFiles)
+	eventID, err := s.logPendingEvent(ctx, "video", modelItem, principal, in.Prompt, aspectRatio, resolution, duration, len(in.ReferenceImages), price, "", "v1", refFiles, false)
 	if err != nil {
 		s.cleanupReferenceImages(ctx, "", refFiles)
 		return nil, err
@@ -1343,7 +1343,7 @@ func (s *V1Service) allocateOutput(principal *APIPrincipal, ext, baseURL string)
 	return "/images/" + relativePath, relativePath
 }
 
-func (s *V1Service) logPendingEvent(ctx context.Context, kind string, modelItem *model.ModelConfig, principal *APIPrincipal, prompt, ratio, resolution, duration string, refs int, cost float64, file, source string, refFiles []string) (string, error) {
+func (s *V1Service) logPendingEvent(ctx context.Context, kind string, modelItem *model.ModelConfig, principal *APIPrincipal, prompt, ratio, resolution, duration string, refs int, cost float64, file, source string, refFiles []string, deai bool) (string, error) {
 	event := &model.EventLog{
 		ID:         "evt-" + randomUpper(12),
 		TS:         time.Now(),
@@ -1356,6 +1356,7 @@ func (s *V1Service) logPendingEvent(ctx context.Context, kind string, modelItem 
 		Resolution: resolution,
 		Duration:   duration,
 		Refs:       refs,
+		DeAI:       deai,
 		Source:     source,
 		Cost:       cost,
 		File:       file,

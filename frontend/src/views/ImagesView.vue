@@ -328,6 +328,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
               <span v-if="f.resolution" class="text-emerald-300/90">{{ f.resolution }}</span>
               <span v-if="f.ratio" class="text-white/40">{{ f.ratio }}</span>
               <span v-if="f.kind === 'video' && f.duration" class="text-fuchsia-300/80">{{ f.duration }}</span>
+              <span v-if="f.deai" class="text-violet-300/80">去AI</span>
             </span>
           </div>
           <div class="text-[10px] text-white/35 mt-0.5 tabular-nums">{{ fmtSize(f.size) }} · {{ fmtTs(f.mtime) }}</div>
@@ -356,7 +357,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
       :kind="selected.kind"
       :prompt="selected.prompt"
       :meta="[selected.model, selected.name].filter(Boolean).join(' · ')"
-      :meta-sub="[selected.resolution, selected.ratio, (selected.kind === 'video' ? selected.duration : ''), fmtSize(selected.size), fmtTs(selected.mtime)].filter(Boolean).join(' · ')"
+      :meta-sub="[selected.resolution, selected.ratio, (selected.kind === 'video' ? selected.duration : ''), (selected.deai ? '去AI特征' : ''), fmtSize(selected.size), fmtTs(selected.mtime)].filter(Boolean).join(' · ')"
       :download-name="selected.name.split('/').pop()"
       @close="selected = null" />
 
