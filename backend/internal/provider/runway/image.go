@@ -13,14 +13,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// GenerateImage runs the Runway "Nano Banana 2" (gemini_3_1_flash_image)
-// text/image-to-image pipeline: upload each reference image (DATASET +
-// DATASET_PREVIEW → dataset) to obtain its {assetId, url}, create a gemini image
-// task and poll it to completion, then download the rendered PNG. teamID is the
-// workspace id; if empty it's derived from the token. aspectRatio is passed
-// through as-is (e.g. "16:9"); imageSize is the "1K"/"2K"/"4K" tier. refs may be
-// empty (pure text-to-image).
-func (c *Client) GenerateImage(ctx context.Context, token, teamID, prompt, aspectRatio, imageSize string, refs [][]byte) ([]byte, map[string]any, error) {
+// GenerateImage runs the Runway "Nano Banana Pro" (workflow_gemini_image /
+// gemini-3-pro-image-preview) text/image-to-image pipeline: upload each
+// reference image (DATASET + DATASET_PREVIEW → dataset) to obtain its
+// {assetId, url}, create a gemini image task and poll it to completion, then
+// download the rendered PNG. teamID is the workspace id; if empty it's derived
+// from the token. imageSize is the "1K"/"2K"/"4K" tier (Pro honors 2K/4K).
+// refs may be empty (pure text-to-image).
+func (c *Client) GenerateImage(ctx context.Context, token, teamID, prompt, imageSize string, refs [][]byte) ([]byte, map[string]any, error) {
 	token = strings.TrimSpace(strings.TrimPrefix(token, "Bearer "))
 	if token == "" {
 		return nil, nil, ErrAuth
@@ -30,9 +30,6 @@ func (c *Client) GenerateImage(ctx context.Context, token, teamID, prompt, aspec
 	}
 	if teamID == "" {
 		return nil, nil, errors.New("runway: no team id")
-	}
-	if strings.TrimSpace(aspectRatio) == "" {
-		aspectRatio = "16:9"
 	}
 	if strings.TrimSpace(imageSize) == "" {
 		imageSize = "1K"
@@ -66,7 +63,7 @@ func (c *Client) GenerateImage(ctx context.Context, token, teamID, prompt, aspec
 		})
 	}
 
-	taskID, err := c.createImageTask(ctx, submitClient, token, teamID, prompt, aspectRatio, imageSize, refImages)
+	taskID, err := c.createImageTask(ctx, submitClient, token, teamID, prompt, imageSize, refImages)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -111,15 +108,15 @@ func (c *Client) uploadReference(ctx context.Context, client tlsclient.HttpClien
 	return assetID, refURL, nil
 }
 
-// createImageTask creates a gemini_3_1_flash_image task and returns its id.
-func (c *Client) createImageTask(ctx context.Context, client tlsclient.HttpClient, token, teamID, prompt, aspectRatio, imageSize string, refImages []map[string]any) (string, error) {
+// createImageTask creates a workflow_gemini_image (Nano Banana Pro) task and
+// returns its id.
+func (c *Client) createImageTask(ctx context.Context, client tlsclient.HttpClient, token, teamID, prompt, imageSize string, refImages []map[string]any) (string, error) {
 	opts := map[string]any{
-		"name":           "Nano Banana 2 - " + prompt,
+		"name":           "Nano Banana Pro - " + prompt,
 		"text_prompt":    prompt,
-		"aspect_ratio":   aspectRatio,
 		"num_images":     1,
 		"image_size":     imageSize,
-		"model":          "gemini-3.1-flash-image-preview",
+		"model":          "gemini-3-pro-image-preview",
 		"exploreMode":    false,
 		"creationSource": "tool-mode",
 	}
@@ -127,7 +124,7 @@ func (c *Client) createImageTask(ctx context.Context, client tlsclient.HttpClien
 		opts["reference_images"] = refImages
 	}
 	res, err := c.submitTask(ctx, client, token, teamID, map[string]any{
-		"taskType":  "gemini_3_1_flash_image",
+		"taskType":  "workflow_gemini_image",
 		"options":   opts,
 		"asTeamId":  jsonNumberOrString(teamID),
 		"sessionId": uuid.NewString(),
