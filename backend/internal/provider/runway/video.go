@@ -70,39 +70,37 @@ func (c *Client) GenerateVideo(ctx context.Context, token, teamID, prompt, aspec
 		return nil, nil, errors.New("runway: failed to decode first-frame image")
 	}
 
-	// Only the task-create (generate submit) egresses via the proxy; first-frame
-	// upload, polling and download run on the local IP.
-	submitClient, err := c.newTLSClient()
-	if err != nil {
-		return nil, nil, err
-	}
-	directClient, err := c.newDirectTLSClient()
+	// Use a single client (and therefore a single exit IP) for the whole flow.
+	// The web app runs upload, task-create, polling and download from one IP; a
+	// mid-flow IP switch (proxy for submit, local for the rest) is a strong
+	// bot/risk signal, so we route everything through the proxy-aware client.
+	apiClient, err := c.newTLSClient()
 	if err != nil {
 		return nil, nil, err
 	}
 
 	filename := "frame_" + time.Now().UTC().Format("20060102_150405") + ".png"
-	previewUploadID, _, err := c.uploadFile(ctx, directClient, token, teamID, filename, "DATASET_PREVIEW", frame)
+	previewUploadID, _, err := c.uploadFile(ctx, apiClient, token, teamID, filename, "DATASET_PREVIEW", frame)
 	if err != nil {
 		return nil, nil, err
 	}
-	datasetUploadID, _, err := c.uploadFile(ctx, directClient, token, teamID, filename, "DATASET", frame)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	assetID, imageURL, err := c.createDataset(ctx, directClient, token, teamID, filename, datasetUploadID, previewUploadID, cfg.Width, cfg.Height)
-	if err != nil {
-		return nil, nil, err
-	}
-	assetGroupID, _ := c.assetGroupID(ctx, directClient, token, teamID) // best-effort
-
-	taskID, err := c.createTask(ctx, submitClient, token, teamID, prompt, imageURL, assetID, assetGroupID, aspectRatio, seconds)
+	datasetUploadID, _, err := c.uploadFile(ctx, apiClient, token, teamID, filename, "DATASET", frame)
 	if err != nil {
 		return nil, nil, err
 	}
 
-	artifactURL, err := c.pollTask(ctx, directClient, token, teamID, taskID)
+	assetID, imageURL, err := c.createDataset(ctx, apiClient, token, teamID, filename, datasetUploadID, previewUploadID, cfg.Width, cfg.Height)
+	if err != nil {
+		return nil, nil, err
+	}
+	assetGroupID, _ := c.assetGroupID(ctx, apiClient, token, teamID) // best-effort
+
+	taskID, err := c.createTask(ctx, apiClient, token, teamID, prompt, imageURL, assetID, assetGroupID, aspectRatio, seconds)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	artifactURL, err := c.pollTask(ctx, apiClient, token, teamID, taskID)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -115,7 +113,7 @@ func (c *Client) GenerateVideo(ctx context.Context, token, teamID, prompt, aspec
 	if !downloadResult {
 		return nil, meta, nil
 	}
-	data, err := c.download(ctx, directClient, artifactURL)
+	data, err := c.download(ctx, apiClient, artifactURL)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -291,17 +289,7 @@ func (c *Client) apiJSON(ctx context.Context, client tlsclient.HttpClient, token
 		return nil, err
 	}
 	req = req.WithContext(ctx)
-	req.Header = http.Header{
-		"accept":             {"application/json"},
-		"content-type":       {"application/json"},
-		"origin":             {origin},
-		"referer":            {origin + "/"},
-		"authorization":      {"Bearer " + token},
-		"x-runway-workspace": {teamID},
-		http.HeaderOrderKey: {
-			"accept", "content-type", "origin", "referer", "authorization", "x-runway-workspace",
-		},
-	}
+	req.Header = browserHeaders(token, teamID)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrTemporaryUpstream, err)
@@ -343,7 +331,8 @@ func (c *Client) putBytes(ctx context.Context, client tlsclient.HttpClient, url,
 		return "", err
 	}
 	req = req.WithContext(ctx)
-	req.Header = http.Header{"content-type": {contentType}}
+	req.Header = browserAssetHeaders()
+	req.Header.Set("content-type", contentType)
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("%w: %v", ErrTemporaryUpstream, err)
@@ -362,6 +351,10 @@ func (c *Client) download(ctx context.Context, client tlsclient.HttpClient, url 
 		return nil, err
 	}
 	req = req.WithContext(ctx)
+	req.Header = browserAssetHeaders()
+	req.Header.Set("accept", "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+	req.Header.Set("sec-fetch-dest", "image")
+	req.Header.Set("sec-fetch-mode", "no-cors")
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrTemporaryUpstream, err)

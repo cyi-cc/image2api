@@ -6,7 +6,9 @@ package runway
 
 import (
 	"context"
+	crand "crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,7 +24,80 @@ import (
 const (
 	apiBase = "https://api.runwayml.com"
 	origin  = "https://app.runwayml.com"
+
+	// userAgent / secChUA mirror the real browser that produced a successful
+	// registration + generation in the reference HAR (Edge 150 on Windows).
+	userAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0"
+	secChUA   = `"Not;A=Brand";v="8", "Chromium";v="150", "Microsoft Edge";v="150"`
 )
+
+// randHex returns n random bytes hex-encoded (2n chars), for sentry trace ids.
+func randHex(n int) string {
+	b := make([]byte, n)
+	if _, err := crand.Read(b); err != nil {
+		return strings.Repeat("0", n*2)
+	}
+	return hex.EncodeToString(b)
+}
+
+// browserHeaders builds the full Chrome/Edge header set the Runway web app sends
+// on its JSON API calls. tls-client only spoofs the TLS/JA3 fingerprint — it does
+// NOT inject a User-Agent or the client-hint / fetch-metadata headers. Without
+// them a request looks like a headless bot and Runway's anti-abuse revokes the
+// account's free credits within minutes ("秒死"). teamID is optional.
+func browserHeaders(token, teamID string) http.Header {
+	traceID := randHex(16)
+	spanID := randHex(8)
+	h := http.Header{
+		"accept":             {"application/json"},
+		"accept-language":    {"zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6"},
+		"authorization":      {"Bearer " + strings.TrimPrefix(token, "Bearer ")},
+		"baggage":            {"sentry-environment=production,sentry-public_key=8ea832c064ed4bbcb4b8952c02ba119a,sentry-trace_id=" + traceID},
+		"content-type":       {"application/json"},
+		"origin":             {origin},
+		"priority":           {"u=1, i"},
+		"referer":            {origin + "/"},
+		"sec-ch-ua":          {secChUA},
+		"sec-ch-ua-mobile":   {"?0"},
+		"sec-ch-ua-platform": {`"Windows"`},
+		"sec-fetch-dest":     {"empty"},
+		"sec-fetch-mode":     {"cors"},
+		"sec-fetch-site":     {"same-site"},
+		"sentry-trace":       {traceID + "-" + spanID},
+		"user-agent":         {userAgent},
+		"x-runway-workspace": {teamID},
+		http.HeaderOrderKey: {
+			"accept", "accept-language", "authorization", "baggage",
+			"content-type", "origin", "priority", "referer",
+			"sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+			"sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site",
+			"sentry-trace", "user-agent", "x-runway-workspace",
+		},
+	}
+	if strings.TrimSpace(teamID) == "" {
+		h.Del("x-runway-workspace")
+	}
+	return h
+}
+
+// browserAssetHeaders is the lighter header set the browser sends on cross-site
+// asset transfers (presigned S3 upload / CloudFront artifact download): a
+// User-Agent and client hints, but no Runway authorization.
+func browserAssetHeaders() http.Header {
+	return http.Header{
+		"accept":             {"*/*"},
+		"accept-language":    {"zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6"},
+		"origin":             {origin},
+		"referer":            {origin + "/"},
+		"sec-ch-ua":          {secChUA},
+		"sec-ch-ua-mobile":   {"?0"},
+		"sec-ch-ua-platform": {`"Windows"`},
+		"sec-fetch-dest":     {"empty"},
+		"sec-fetch-mode":     {"cors"},
+		"sec-fetch-site":     {"cross-site"},
+		"user-agent":         {userAgent},
+	}
+}
 
 var (
 	ErrAuth              = errors.New("runway auth failed")
@@ -112,22 +187,7 @@ func (c *Client) FetchCreditsBalance(ctx context.Context, token string) (map[str
 		return nil, err
 	}
 	req = req.WithContext(ctx)
-	req.Header = http.Header{
-		"accept":             {"application/json"},
-		"content-type":       {"application/json"},
-		"origin":             {origin},
-		"referer":            {origin + "/"},
-		"authorization":      {"Bearer " + token},
-		"x-runway-workspace": {teamID},
-		http.HeaderOrderKey: {
-			"accept",
-			"content-type",
-			"origin",
-			"referer",
-			"authorization",
-			"x-runway-workspace",
-		},
-	}
+	req.Header = browserHeaders(token, teamID)
 
 	resp, err := client.Do(req)
 	if err != nil {

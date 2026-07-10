@@ -64,7 +64,9 @@ func (c *Client) GenerateImage(ctx context.Context, token, teamID, modelID, prom
 		})
 	}
 
-	taskID, err := c.createImageTask(ctx, submitClient, token, teamID, modelID, prompt, aspectRatio, imageSize, refImages)
+	assetGroupID, _ := c.assetGroupID(ctx, directClient, token, teamID) // best-effort
+
+	taskID, err := c.createImageTask(ctx, submitClient, token, teamID, modelID, prompt, aspectRatio, imageSize, assetGroupID, refImages)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -111,7 +113,7 @@ func (c *Client) uploadReference(ctx context.Context, client tlsclient.HttpClien
 
 // createImageTask creates a gemini image task (workflow_gemini_image for Pro,
 // gemini_3_1_flash_image for Nano Banana 2) and returns its id.
-func (c *Client) createImageTask(ctx context.Context, client tlsclient.HttpClient, token, teamID, modelID, prompt, aspectRatio, imageSize string, refImages []map[string]any) (string, error) {
+func (c *Client) createImageTask(ctx context.Context, client tlsclient.HttpClient, token, teamID, modelID, prompt, aspectRatio, imageSize, assetGroupID string, refImages []map[string]any) (string, error) {
 	taskType := "workflow_gemini_image"
 	opts := map[string]any{
 		"name":           "Nano Banana Pro - " + prompt,
@@ -130,6 +132,12 @@ func (c *Client) createImageTask(ctx context.Context, client tlsclient.HttpClien
 			aspectRatio = "16:9"
 		}
 		opts["aspect_ratio"] = aspectRatio
+	}
+	// assetGroupId is present on every real browser task submit; omitting it is a
+	// bot tell. Best-effort — only attach when we resolved the "Generations"
+	// group for this workspace.
+	if assetGroupID != "" {
+		opts["assetGroupId"] = assetGroupID
 	}
 	if len(refImages) > 0 {
 		opts["reference_images"] = refImages
