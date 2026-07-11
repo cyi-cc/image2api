@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"math/rand/v2"
 	"os"
@@ -296,13 +297,15 @@ func (c *Client) FetchSession(ctx context.Context, token string) (email, userID 
 	return strings.TrimSpace(body.Session.Email), strings.TrimSpace(body.Session.UserID), nil
 }
 
-// grok's x-statsig-id is validated per-session: the 49-byte header is 0x00 plus
-// a 48-byte "seed" published in the homepage <meta name="grok-site-verification">,
-// and the salt embeds a 3-byte "F" the server recomputes from that seed and the
-// page's curve set. Both rotate whenever grok ships a new web build, so hardcoded
-// constants go stale (403 anti-bot). We self-heal: fetch the homepage per session
-// (browser-free, tls-client), derive seed + F, and cache. The static defaults
-// below (env-overridable) are a last-resort fallback if the fetch fails.
+// grok's x-statsig-id is a per-session anti-bot token. Its 3-byte "F" tail is a
+// browser fingerprint the server recomputes from the homepage seed + curve set,
+// and the byte-indexing that derives it ROTATES on every grok web reship — so any
+// hand-ported algorithm goes stale within a day (403 anti-bot). The durable path
+// therefore runs grok's OWN signer in goja (statsig_engine.go): we fetch the seed
+// + curves from the homepage and let grok's code do all the (rotating) indexing.
+// statsigID prefers that engine; the hand-ported computeStatsigTail below and the
+// static env-overridable defaults are only a last-resort fallback. See the package
+// doc and statsig_engine.go for the full picture.
 // statsigEpoch is the challenge epoch (2023-05-01 00:00 UTC).
 const (
 	statsigEpoch          = 1682924400
@@ -332,6 +335,11 @@ type statsigChallenge struct {
 	suffix    string
 	trailer   byte
 	fetchedAt time.Time
+
+	// Inputs for the durable goja signer (statsig_js.go): the raw <meta> seed
+	// content and the curves JSON. Empty when parsing failed (engine then skipped).
+	seedB64    string
+	curvesJSON string
 }
 
 // statsigCurve is one entry of the per-load curve set injected via the Next.js
@@ -386,8 +394,14 @@ func (c *Client) ensureChallenge(ctx context.Context, client tlsclient.HttpClien
 	}
 	ch, err := fetchStatsigChallenge(ctx, client, token)
 	if err != nil {
+		// Silent fallback to static defaults is the #1 cause of a recurring
+		// "403 anti-bot": the homepage structure changed and we never notice.
+		// Surface it so the failure mode (fetch/parse broke vs. offsets rotated)
+		// is diagnosable from logs instead of guessing.
+		log.Printf("grok statsig: self-heal failed, using stale static defaults (403 likely): %v", err)
 		return
 	}
+	log.Printf("grok statsig: self-heal ok header[:6]=%x suffix=%s", ch.header[:6], ch.suffix)
 	statsigMu.Lock()
 	statsigCache[token] = ch
 	statsigMu.Unlock()
@@ -423,27 +437,36 @@ func fetchStatsigChallenge(ctx context.Context, client tlsclient.HttpClient, tok
 	if mm == nil {
 		return statsigChallenge{}, errors.New("statsig: seed meta not found")
 	}
-	seed, err := decodeStatsigSeed(mm[1])
-	if err != nil {
-		return statsigChallenge{}, err
-	}
 	curves, err := parseStatsigCurves(html)
 	if err != nil {
 		return statsigChallenge{}, err
 	}
-	tail, err := computeStatsigTail(seed, curves)
+	curvesJSON, err := json.Marshal(curves)
 	if err != nil {
 		return statsigChallenge{}, err
 	}
-	header := make([]byte, 0, 49)
-	header = append(header, 0x00)
-	header = append(header, seed...)
-	return statsigChallenge{
-		header:    header,
-		suffix:    statsigSaltPrefix + tail,
-		trailer:   defaultStatsigTrailer,
-		fetchedAt: time.Now(),
-	}, nil
+
+	// Primary path is the goja signer (statsig_js.go); set it up / refresh it for
+	// this build. Static (header, salt) below is only a last-resort fallback.
+	ensureEngine(ctx, client, html)
+
+	ch := statsigChallenge{
+		header:     statsigHeader,
+		suffix:     statsigSuffix,
+		trailer:    statsigTrailer,
+		fetchedAt:  time.Now(),
+		seedB64:    mm[1],
+		curvesJSON: string(curvesJSON),
+	}
+	// Best-effort static derivation (the old hand-ported algorithm) as fallback.
+	if seed, err := decodeStatsigSeed(mm[1]); err == nil {
+		if tail, err := computeStatsigTail(seed, curves); err == nil {
+			ch.header = append([]byte{0x00}, seed...)
+			ch.suffix = statsigSaltPrefix + tail
+			ch.trailer = defaultStatsigTrailer
+		}
+	}
+	return ch, nil
 }
 
 func decodeStatsigSeed(s string) ([]byte, error) {
@@ -635,10 +658,20 @@ func cubicBezierEase(x1, y1, x2, y2, p float64) float64 {
 func statsigID(path, method, token string) string {
 	header, suffix, trailer := statsigHeader, statsigSuffix, statsigTrailer
 	statsigMu.Lock()
-	if ch, ok := statsigCache[token]; ok {
-		header, suffix, trailer = ch.header, ch.suffix, ch.trailer
-	}
+	ch, ok := statsigCache[token]
 	statsigMu.Unlock()
+	if ok {
+		header, suffix, trailer = ch.header, ch.suffix, ch.trailer
+		// Primary: run grok's own signer in goja (durable across reships). Falls
+		// through to the static computation below on any failure.
+		if ch.seedB64 != "" && ch.curvesJSON != "" {
+			if id, err := signWithEngine(ch.seedB64, ch.curvesJSON, path, method); err == nil {
+				return id
+			} else if !errors.Is(err, errEngineNotReady) {
+				log.Printf("grok statsig: js signer failed, using static fallback: %v", err)
+			}
+		}
+	}
 
 	counter := uint32(time.Now().Unix() - statsigEpoch)
 	sig := fmt.Sprintf("%s!%s!%d%s", method, path, counter, suffix)
