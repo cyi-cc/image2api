@@ -215,7 +215,7 @@ const params = (e) => {
           <tr v-for="e in displayed" :key="e.id" class="log-row">
             <td class="px-3 py-3 align-middle text-center">
               <!-- API(v1) videos are no-store: file is an external provider URL
-                   (not a RustFS path), so it can't be previewed in-browser — show —. -->
+                   (not an R2 object key), so it can't be previewed in-browser — show —. -->
               <button v-if="e.status === 'success' && e.file && !e.file.startsWith('http')" @click="lightbox = e"
                       class="block w-11 h-11 mx-auto rounded-lg overflow-hidden ring-1 ring-slate-200 hover:ring-fuchsia-300 transition-all">
                 <img v-if="e.kind !== 'video' || !thumbFail[e.id]" :src="thumbUrl(e.file)" loading="lazy" class="w-full h-full object-cover"

@@ -1,0 +1,17 @@
+.git
+.agents
+.codex
+.env
+.env.*
+deploy
+node_modules
+frontend/node_modules
+frontend/dist
+backend/.env
+backend/.env.*
+backend/bin
+backend/data
+*.log
+*.zip
+*.har
+.DS_Store

@@ -52,13 +52,23 @@ type CreditSettings struct {
 // 画图台 — charged on top of the model's image price when the toggle is on.
 type DeAISettings struct {
 	Enabled bool `json:"enabled"`
-	Price1K int `json:"price_1k"`
-	Price2K int `json:"price_2k"`
-	Price4K int `json:"price_4k"`
+	Price1K int  `json:"price_1k"`
+	Price2K int  `json:"price_2k"`
+	Price4K int  `json:"price_4k"`
 }
 
 type ProxySettings struct {
 	Proxy string `json:"proxy"`
+}
+
+type R2Settings struct {
+	Endpoint        string `json:"endpoint"`
+	Region          string `json:"region"`
+	BucketName      string `json:"bucket_name"`
+	PublicBaseURL   string `json:"public_base_url"`
+	AccessKeyID     string `json:"access_key_id"`
+	SecretAccessKey string `json:"secret_access_key"`
+	Configured      bool   `json:"configured"`
 }
 
 type RetentionSettings struct {
@@ -96,10 +106,15 @@ func (s *AppSettingsService) UploadLogo(ctx context.Context, data []byte, conten
 	if err := s.store.Put(ctx, key, data, contentType); err != nil {
 		return "", err
 	}
-	url := "/images/" + key
+	url := s.store.PublicURL(key)
+	if url == "" {
+		return "", errors.New("R2 公开访问地址未配置")
+	}
 	// Delete the previous uploaded logo (best-effort), then point site.logo at the new one.
-	if old, _ := s.settings.GetValue(ctx, "site.logo"); strings.HasPrefix(old, "/images/branding/") {
-		_ = s.store.Delete(ctx, strings.TrimPrefix(old, "/images/"))
+	if old, _ := s.settings.GetValue(ctx, "site.logo"); old != "" {
+		if oldKey, ok := s.storageKey(old); ok && strings.HasPrefix(oldKey, "branding/") {
+			_ = s.store.Delete(ctx, oldKey)
+		}
 	}
 	if err := s.settings.UpsertValue(ctx, "site.logo", url); err != nil {
 		return "", err
@@ -128,10 +143,24 @@ func (s *AppSettingsService) UploadAsset(ctx context.Context, data []byte, conte
 
 // RemoveLogo deletes the uploaded logo and resets site.logo to the built-in default (empty).
 func (s *AppSettingsService) RemoveLogo(ctx context.Context) error {
-	if old, _ := s.settings.GetValue(ctx, "site.logo"); strings.HasPrefix(old, "/images/branding/") && s.store != nil {
-		_ = s.store.Delete(ctx, strings.TrimPrefix(old, "/images/"))
+	if old, _ := s.settings.GetValue(ctx, "site.logo"); old != "" && s.store != nil {
+		if oldKey, ok := s.storageKey(old); ok && strings.HasPrefix(oldKey, "branding/") {
+			_ = s.store.Delete(ctx, oldKey)
+		}
 	}
 	return s.settings.UpsertValue(ctx, "site.logo", "")
+}
+
+func (s *AppSettingsService) storageKey(raw string) (string, bool) {
+	if s.store != nil {
+		if key, ok := s.store.KeyFromPublicURL(raw); ok {
+			return key, true
+		}
+	}
+	if strings.HasPrefix(raw, "/images/") {
+		return strings.TrimPrefix(raw, "/images/"), true
+	}
+	return "", false
 }
 
 func logoExt(contentType string) string {
@@ -300,6 +329,104 @@ func (s *AppSettingsService) SaveProxy(ctx context.Context, proxy string) (*Prox
 	return &ProxySettings{Proxy: proxy}, nil
 }
 
+func (s *AppSettingsService) R2(ctx context.Context) (*R2Settings, error) {
+	get := func(key string) (string, error) {
+		v, err := s.settings.GetValue(ctx, key)
+		return strings.TrimSpace(v), err
+	}
+	endpoint, err := get("r2.endpoint")
+	if err != nil {
+		return nil, err
+	}
+	region, err := get("r2.region")
+	if err != nil {
+		return nil, err
+	}
+	bucket, err := get("r2.bucket_name")
+	if err != nil {
+		return nil, err
+	}
+	publicBaseURL, err := get("r2.public_base_url")
+	if err != nil {
+		return nil, err
+	}
+	accessKeyID, err := get("r2.access_key_id")
+	if err != nil {
+		return nil, err
+	}
+	secret, err := get("r2.secret_access_key")
+	if err != nil {
+		return nil, err
+	}
+	if region == "" {
+		region = "auto"
+	}
+	return &R2Settings{
+		Endpoint: endpoint, Region: region, BucketName: bucket,
+		PublicBaseURL: publicBaseURL, AccessKeyID: accessKeyID,
+		SecretAccessKey: maskedSecret(secret), Configured: s.store != nil && s.store.Configured(),
+	}, nil
+}
+
+func (s *AppSettingsService) SaveR2(ctx context.Context, in R2Settings) (*R2Settings, error) {
+	oldLogoKey := ""
+	if oldLogo, _ := s.settings.GetValue(ctx, "site.logo"); oldLogo != "" && s.store != nil {
+		oldLogoKey, _ = s.store.KeyFromPublicURL(oldLogo)
+	}
+	secret := strings.TrimSpace(in.SecretAccessKey)
+	if secret == "" || secret == "***" {
+		var err error
+		secret, err = s.settings.GetValue(ctx, "r2.secret_access_key")
+		if err != nil {
+			return nil, err
+		}
+	}
+	normalized, err := storage.NormalizeR2Config(storage.R2Config{
+		Endpoint: in.Endpoint, Region: in.Region, BucketName: in.BucketName,
+		PublicBaseURL: in.PublicBaseURL, AccessKeyID: in.AccessKeyID,
+		SecretAccessKey: secret,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := s.settings.UpsertValues(ctx, map[string]string{
+		"r2.endpoint":          normalized.Endpoint,
+		"r2.region":            normalized.Region,
+		"r2.bucket_name":       normalized.BucketName,
+		"r2.public_base_url":   normalized.PublicBaseURL,
+		"r2.access_key_id":     normalized.AccessKeyID,
+		"r2.secret_access_key": normalized.SecretAccessKey,
+	}); err != nil {
+		return nil, err
+	}
+	if s.store == nil {
+		return nil, errors.New("R2 客户端未初始化")
+	}
+	if err := s.store.Configure(normalized); err != nil {
+		return nil, err
+	}
+	if strings.HasPrefix(oldLogoKey, "branding/") {
+		_ = s.settings.UpsertValue(ctx, "site.logo", s.store.PublicURL(oldLogoKey))
+	}
+	return s.R2(ctx)
+}
+
+// TestR2 verifies authenticated write/delete access using a tiny temporary
+// object. It intentionally leaves existing generated media untouched.
+func (s *AppSettingsService) TestR2(ctx context.Context) error {
+	if s.store == nil || !s.store.Configured() {
+		return errors.New("请先保存 R2 配置")
+	}
+	key := "musesapi-healthcheck/" + randomUpper(12) + ".txt"
+	if err := s.store.Put(ctx, key, []byte("MusesAPI R2 connection test"), "text/plain"); err != nil {
+		return fmt.Errorf("R2 写入测试失败:%w", err)
+	}
+	if err := s.store.Delete(ctx, key); err != nil {
+		return fmt.Errorf("R2 写入成功,但删除测试失败:%w", err)
+	}
+	return nil
+}
+
 // TestProxy routes a probe request through the given proxy to an IP-echo service
 // and reports the egress IP + latency. Tests the value passed in (so the admin
 // can verify before saving). Mirrors how generation calls go out — same HTTP
@@ -422,10 +549,10 @@ func (s *AppSettingsService) SaveCredits(ctx context.Context, in CreditSettings)
 		in.InviteReward = 0
 	}
 	if err := s.settings.UpsertValues(ctx, map[string]string{
-		"credits.checkin_enabled":   strconv.FormatBool(in.CheckinEnabled),
-		"credits.checkin_reward":    strconv.Itoa(in.CheckinReward),
-		"credits.invite_enabled":    strconv.FormatBool(in.InviteEnabled),
-		"credits.invite_reward":     strconv.Itoa(in.InviteReward),
+		"credits.checkin_enabled":    strconv.FormatBool(in.CheckinEnabled),
+		"credits.checkin_reward":     strconv.Itoa(in.CheckinReward),
+		"credits.invite_enabled":     strconv.FormatBool(in.InviteEnabled),
+		"credits.invite_reward":      strconv.Itoa(in.InviteReward),
 		"credits.cdk_redeem_enabled": strconv.FormatBool(in.CDKRedeemEnabled),
 	}); err != nil {
 		return nil, err
@@ -538,7 +665,7 @@ func normalizeRetentionDays(days int) (int, error) {
 	return days, nil
 }
 
-// pruneGeneratedFiles deletes RustFS objects older than maxAge and blanks the
+// pruneGeneratedFiles deletes R2 objects older than maxAge and blanks the
 // matching event_log.file refs. Returns how many were removed and bytes freed.
 // (The maintenance loop does the same automatically every 60s; this gives the
 // admin an immediate result when they shorten the media retention window.)

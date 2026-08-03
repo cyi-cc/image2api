@@ -5,17 +5,20 @@ import (
 	"strings"
 
 	"backend/internal/repo"
+	"backend/internal/storage"
 )
 
 type SiteService struct {
 	settings *repo.SiteSettingRepository
 	fallback string
+	store    *storage.Client
 }
 
-func NewSiteService(settings *repo.SiteSettingRepository, fallback string) *SiteService {
+func NewSiteService(settings *repo.SiteSettingRepository, fallback string, store *storage.Client) *SiteService {
 	return &SiteService{
 		settings: settings,
 		fallback: fallback,
+		store:    store,
 	}
 }
 
@@ -50,6 +53,12 @@ func (s *SiteService) get(ctx context.Context, key string) string {
 // Logo / Subtitle are admin-editable branding shown on the public site.
 func (s *SiteService) Logo(ctx context.Context) string     { return s.get(ctx, "site.logo") }
 func (s *SiteService) Subtitle(ctx context.Context) string { return s.get(ctx, "site.subtitle") }
+func (s *SiteService) MediaBaseURL() string {
+	if s.store == nil {
+		return ""
+	}
+	return s.store.PublicBaseURL()
+}
 
 // CDKRedeemEnabled reflects the admin "兑换码" switch (default on). The front-end
 // hides the redeem UI when off.

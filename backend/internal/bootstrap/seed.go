@@ -42,6 +42,12 @@ func seedDefaults(ctx context.Context, db *gorm.DB) error {
 		{Key: "pay.points_ratio", Value: "100"},
 		{Key: "logs.retention_days", Value: "30"},
 		{Key: "media.retention_days", Value: "30"},
+		{Key: "r2.endpoint", Value: ""},
+		{Key: "r2.region", Value: "auto"},
+		{Key: "r2.bucket_name", Value: ""},
+		{Key: "r2.public_base_url", Value: ""},
+		{Key: "r2.access_key_id", Value: ""},
+		{Key: "r2.secret_access_key", Value: ""},
 	}
 	for _, item := range defaults {
 		var count int64

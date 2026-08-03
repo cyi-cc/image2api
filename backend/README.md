@@ -15,7 +15,7 @@ This is an in-progress rewrite. The current skeleton already includes:
 - PostgreSQL and Redis initialization
 - GORM auto-migrations
 - session storage in Redis
-- image access control for `/images/:user/:name`
+- Cloudflare R2 storage with public custom-domain reads
 - public site endpoint: `/admin/api/site`
 - public showcase endpoint: `/admin/api/showcase`
 - session-based auth endpoint: `/admin/api/auth/me`
@@ -47,9 +47,6 @@ go run ./cmd/api
 
 ## Notes
 
-- Generated media defaults to `../../ai-gateway/data/generated` relative to the backend working directory.
-- Private images require either:
-  - session cookie
-  - bearer session token
-  - bearer API key
-- Showcase images are public.
+- Generated media is uploaded to R2; the local generated root remains only for development compatibility.
+- R2 is configured by an administrator in the web Settings page and persisted in PostgreSQL.
+- R2 credentials are not read from environment variables.

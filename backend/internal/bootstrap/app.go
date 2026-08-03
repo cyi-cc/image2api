@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"backend/internal/config"
@@ -112,9 +113,12 @@ func NewApp(ctx context.Context) (*App, error) {
 	emailCodeSvc := service.NewEmailCodeService(rdb)
 	smtpSvc := service.NewSMTPService()
 	rateLimitSvc := service.NewRateLimitService(rdb)
-	rustfsClient := storage.New(cfg.RustFSEndpoint, cfg.RustFSBucket, cfg.RustFSAccessKey, cfg.RustFSSecretKey)
+	r2Client := storage.NewR2("", "auto", "", "", "", "")
+	if err := loadRuntimeR2(ctx, siteRepo, r2Client); err != nil {
+		log.Printf("load R2 settings: %v (configure it in the admin settings page)", err)
+	}
 	authSvc := service.NewAuthService(userRepo, siteRepo, sessionSvc, emailCodeSvc, smtpSvc, cgroupRepo)
-	appSettingsSvc := service.NewAppSettingsService(siteRepo, eventRepo, smtpSvc, rustfsClient)
+	appSettingsSvc := service.NewAppSettingsService(siteRepo, eventRepo, smtpSvc, r2Client)
 	imageAccessSvc := service.NewImageAccessService(cfg.GeneratedRoot, showcaseRepo, authSvc)
 	adobeClient := adobe.NewClient("projectx_webapp", "")
 	chatGPTClient := chatgpt.NewClient("")
@@ -129,10 +133,10 @@ func NewApp(ctx context.Context) (*App, error) {
 	// (a reship made the recipe stale). No polling.
 	startGrokStatsigRefresh(siteRepo)
 	customClient := custom.NewClient()
-	v1Svc := service.NewV1Service(cfg, modelRepo, userRepo, eventRepo, tokenRepo, siteRepo, cgroupRepo, concSvc, adobeClient, chatGPTClient, runwayClient, leonardoClient, kreaClient, imagineClient, grokClient, customClient, rustfsClient)
-	siteSvc := service.NewSiteService(siteRepo, cfg.AppTitle)
+	v1Svc := service.NewV1Service(cfg, modelRepo, userRepo, eventRepo, tokenRepo, siteRepo, cgroupRepo, concSvc, adobeClient, chatGPTClient, runwayClient, leonardoClient, kreaClient, imagineClient, grokClient, customClient, r2Client)
+	siteSvc := service.NewSiteService(siteRepo, cfg.AppTitle, r2Client)
 	showcaseSvc := service.NewShowcaseService(showcaseRepo)
-	adminReadSvc := service.NewAdminReadService(cfg, userRepo, modelRepo, eventRepo, siteRepo, tokenRepo, cdkRepo, rustfsClient, showcaseRepo)
+	adminReadSvc := service.NewAdminReadService(cfg, userRepo, modelRepo, eventRepo, siteRepo, tokenRepo, cdkRepo, r2Client, showcaseRepo)
 	adminWriteSvc := service.NewAdminWriteService(userRepo, showcaseRepo, modelRepo, eventRepo, apiKeyRepo, tokenRepo, orderRepo)
 	cdkSvc := service.NewCDKService(cdkRepo, userRepo, siteRepo, orderRepo)
 	apiKeySvc := service.NewAPIKeyService(apiKeyRepo)
@@ -147,7 +151,7 @@ func NewApp(ctx context.Context) (*App, error) {
 
 	engine := router.New(cfg, authSvc, router.Handlers{
 		Health:        handler.NewHealthHandler(),
-		Images:        handler.NewImageHandler(cfg, imageAccessSvc, rustfsClient),
+		Images:        handler.NewImageHandler(cfg, imageAccessSvc, r2Client),
 		V1:            handler.NewV1Handler(v1Svc),
 		Site:          handler.NewSiteHandler(siteSvc),
 		Showcase:      handler.NewShowcaseHandler(showcaseSvc),
@@ -168,7 +172,7 @@ func NewApp(ctx context.Context) (*App, error) {
 
 	// Background self-healing sweep (quota recovery, cookie refresh, stale-pending
 	// cleanup, log retention) — the Go equivalent of the Python daemon thread.
-	maintenanceSvc := service.NewMaintenanceService(tokenRepo, tokenSvc, eventRepo, userRepo, refreshSvc, siteRepo, rustfsClient, v1Svc.Inflight(), showcaseRepo, orderRepo)
+	maintenanceSvc := service.NewMaintenanceService(tokenRepo, tokenSvc, eventRepo, userRepo, refreshSvc, siteRepo, r2Client, v1Svc.Inflight(), showcaseRepo, orderRepo)
 	loopCtx, loopCancel := context.WithCancel(context.Background())
 	go maintenanceSvc.Run(loopCtx)
 
@@ -179,6 +183,28 @@ func NewApp(ctx context.Context) (*App, error) {
 		Engine:            engine,
 		maintenanceCancel: loopCancel,
 	}, nil
+}
+
+// loadRuntimeR2 hydrates the shared client from PostgreSQL. Database settings
+// are the single source of truth; no R2 secret is read from the environment or
+// Compose file.
+func loadRuntimeR2(ctx context.Context, settings *repo.SiteSettingRepository, client *storage.Client) error {
+	get := func(key string) string {
+		v, _ := settings.GetValue(ctx, key)
+		return strings.TrimSpace(v)
+	}
+	in := storage.R2Config{
+		Endpoint:        get("r2.endpoint"),
+		Region:          get("r2.region"),
+		BucketName:      get("r2.bucket_name"),
+		PublicBaseURL:   get("r2.public_base_url"),
+		AccessKeyID:     get("r2.access_key_id"),
+		SecretAccessKey: get("r2.secret_access_key"),
+	}
+	if strings.TrimSpace(in.Endpoint) == "" {
+		return nil
+	}
+	return client.Configure(in)
 }
 
 // startGrokStatsigRefresh wires grok's headless x-statsig-id refresher to the

@@ -145,8 +145,8 @@ func (s *UserGenerationService) MyJobs(ctx context.Context, user *model.User, so
 		return nil, err
 	}
 	return map[string]any{
-		"pending": shapeJobEvent(pending, modelNames),
-		"latest":  shapeJobEvent(latest, modelNames),
+		"pending": s.shapeJobEvent(pending, modelNames),
+		"latest":  s.shapeJobEvent(latest, modelNames),
 	}, nil
 }
 
@@ -154,14 +154,14 @@ func (s *UserGenerationService) ModelNameMap(ctx context.Context) (map[string]st
 	return s.models.NameMap(ctx)
 }
 
-func shapeJobEvent(item *model.EventLog, modelNames map[string]string) map[string]any {
+func (s *UserGenerationService) shapeJobEvent(item *model.EventLog, modelNames map[string]string) map[string]any {
 	if item == nil {
 		return nil
 	}
 	status := item.Status
 	url := ""
 	if strings.TrimSpace(item.File) != "" {
-		url = "/images/" + strings.ReplaceAll(strings.TrimSpace(item.File), "\\", "/")
+		url = s.v1.publicMediaURL(item.File)
 	}
 	return map[string]any{
 		"id":             item.ID,
@@ -175,7 +175,7 @@ func shapeJobEvent(item *model.EventLog, modelNames map[string]string) map[strin
 		"status":         status,
 		"file":           emptyOrNil(item.File),
 		"url":            emptyOrNil(url),
-		"reference_urls": referenceURLs(item.RefFiles),
+		"reference_urls": s.referenceURLs(item.RefFiles),
 		"elapsed_ms":     item.ElapsedMS,
 		"error":          emptyOrNil(item.Error),
 		"charged":        item.Cost,
@@ -197,9 +197,9 @@ func displayModelName(modelNames map[string]string, raw string) string {
 	return raw
 }
 
-// referenceURLs turns the stored relative reference paths into /images URLs so
-// the playground can re-display the uploaded reference image(s) after a reload.
-func referenceURLs(raw []byte) []string {
+// referenceURLs turns stored relative reference paths into public R2 URLs so the
+// playground can re-display uploaded reference images after a reload.
+func (s *UserGenerationService) referenceURLs(raw []byte) []string {
 	if len(raw) == 0 {
 		return []string{}
 	}
@@ -211,10 +211,23 @@ func referenceURLs(raw []byte) []string {
 	for _, p := range paths {
 		p = strings.ReplaceAll(strings.TrimSpace(p), "\\", "/")
 		if p != "" {
-			out = append(out, "/images/"+p)
+			out = append(out, s.v1.publicMediaURL(p))
 		}
 	}
 	return out
+}
+
+func (s *V1Service) publicMediaURL(key string) string {
+	key = strings.ReplaceAll(strings.TrimSpace(key), "\\", "/")
+	if key == "" {
+		return ""
+	}
+	if s != nil && s.store != nil {
+		if publicURL := s.store.PublicURL(key); publicURL != "" {
+			return publicURL
+		}
+	}
+	return "/images/" + strings.TrimLeft(key, "/")
 }
 
 func emptyOrNil(v string) any {

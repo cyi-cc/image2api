@@ -10,6 +10,7 @@ export const site = reactive({
   title: 'Vivid',
   logo: '',
   subtitle: '',
+  mediaBaseUrl: '',
   cdkRedeemEnabled: true,
   // Defaults so the 关于 page is never blank even if /site hasn't loaded (or a
   // cache serves an older payload without `contact`). The backend value, once
@@ -45,6 +46,7 @@ export async function loadSite() {
       if (data.title) site.title = String(data.title)
       site.logo = data.logo ? String(data.logo) : ''
       site.subtitle = data.subtitle ? String(data.subtitle) : ''
+      site.mediaBaseUrl = data.media_base_url ? String(data.media_base_url).replace(/\/+$/, '') : ''
       site.cdkRedeemEnabled = data.cdk_redeem_enabled !== false
       if (data.contact) site.contact = { ...site.contact, ...data.contact }
       // The uploaded logo IS the site icon (favicon / 浏览器标签 / 收藏).

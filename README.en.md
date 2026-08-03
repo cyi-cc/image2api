@@ -124,7 +124,7 @@ It's more than an API proxy: it ships with **credit billing, CDK top-ups, referr
 - Model management (normal + agent price + aliases) · account management (bulk import / dedup / quota) · **concurrency groups** · **order management** (filter / search / paginate) · site-wide logs · user management (set as agent / assign concurrency group / view cumulative top-up / banned-word hits) · CDK · image management (multi-select bulk delete / zip download) · showcase · **announcements** · site config (incl. epay, de-AI fingerprint toggle & surcharge pricing)
 - **Banned words**: add / remove words in the console (paginated + multi-select bulk delete); prompts containing a banned word are rejected outright (playground + API, case-insensitive), with per-word / per-user hit counters
 
-**🧰 Engineering highlights**: tls-client (Chrome JA3/JA4 fingerprint) reliably passes Cloudflare · media stored in S3/RustFS, served through an authenticated proxy with retention cleanup · self-healing maintenance loop (quota recovery / credential refresh / orphan-job cleanup with refunds) · one-command Docker deploy (TLS via your own reverse proxy).
+**🧰 Engineering highlights**: tls-client (Chrome JA3/JA4 fingerprint) reliably passes Cloudflare · media stored in Cloudflare R2 and served through its public custom domain with retention cleanup · self-healing maintenance loop (quota recovery / credential refresh / orphan-job cleanup with refunds) · Docker deployment (TLS via your own reverse proxy).
 
 ## 🤖 Supported Models / Providers
 
@@ -165,9 +165,11 @@ Images return OpenAI-style `{ "created": ..., "data": [{ "b64_json": "..." }] }`
 
 > Domain + HTTPS are handled by your own reverse proxy (this project issues no certificates).
 
-**Docker (recommended)**: `docker compose up -d --build` brings up PostgreSQL + Redis + RustFS + backend + frontend (nginx serving **HTTP on container port 2000**); point your reverse proxy at `http://<host>:2000` (port via `WEB_PORT`; edit the values (passwords / keys / `CORS_ORIGINS`, and `COOKIE_SECURE=true` when your proxy serves HTTPS) directly in `docker-compose.yml`).
+Before deploying, create a Cloudflare R2 bucket, enable its public custom domain, and create an API token with Object Read & Write permission. After the containers start, enter these values under **Admin → Settings → Cloudflare R2 Storage**. They are persisted in PostgreSQL and hot-reloaded; no R2 secret belongs in Compose or `.env`.
 
-Or **build from source** — bring your own **PostgreSQL · Redis · RustFS (or any S3) · reverse proxy**:
+**Docker (recommended)**: run `docker compose up -d --build` directly; no `.env` file is required. It starts PostgreSQL + Redis + one MusesAPI service (Go backend with the Vue frontend embedded, HTTP on container port 2000). Open `http://<host>:2000`, create the first administrator, then configure R2 in Settings. The sibling nginx service remains optional.
+
+Or **build from source** — bring your own **PostgreSQL · Redis · Cloudflare R2 · reverse proxy**:
 
 ```bash
 # 1. Create an empty database (the backend auto-migrates on start)
@@ -179,10 +181,6 @@ APP_ENV=production
 HTTP_ADDR=127.0.0.1:6666
 POSTGRES_DSN=host=127.0.0.1 user=postgres password=YOUR_PASSWORD dbname=vivid_ai port=5432 sslmode=disable TimeZone=Asia/Shanghai
 REDIS_ADDR=127.0.0.1:6379
-RUSTFS_ENDPOINT=http://127.0.0.1:9000
-RUSTFS_BUCKET=vivid-ai
-RUSTFS_ACCESS_KEY=YOUR_AK
-RUSTFS_SECRET_KEY=YOUR_SK
 CORS_ORIGINS=https://your-domain
 COOKIE_SECURE=true
 EOF
@@ -191,6 +189,8 @@ cd backend && go build -o bin/api ./cmd/api && ./bin/api   # listens on 127.0.0.
 # 3. Build the frontend (output in frontend/dist)
 cd frontend && npm install && npm run build
 ```
+
+The settings page accepts the complete S3 API copied from Cloudflare, including its `/muses-r2bucket` suffix, and splits the bucket automatically. Use `https://muses-r2bucket.ordoeden.com` as the public URL. Configure bucket CORS with `GET` and `HEAD` for your MusesAPI origin if you use browser copy, ZIP download, or saved media as reference images.
 
 Nginx reverse proxy (issue the certificate yourself with certbot / acme.sh):
 
@@ -224,7 +224,7 @@ server {
 |---|---|
 | Backend | Go · gin · gorm (PostgreSQL) · go-redis · tls-client (Chrome fingerprint) |
 | Frontend | Vue 3 · Vue Router · Vite · Tailwind CSS v4 |
-| Infrastructure | PostgreSQL · Redis · RustFS (S3-compatible) · Nginx |
+| Infrastructure | PostgreSQL · Redis · Cloudflare R2 · Nginx |
 
 ## 📦 Repository Layout
 
@@ -253,7 +253,7 @@ backend/                       Backend source (Go)
 │   │   └── epay/              易支付 / epay (mapi order + MD5-verified callback, top-ups)
 │   ├── repo/                  Data-access layer (users / models / accounts / logs / CDK / orders / concurrency groups…)
 │   ├── service/               Business logic (scheduling, billing, account pools, keep-alive, maintenance)
-│   └── storage/               RustFS / S3 media storage
+│   └── storage/               Cloudflare R2 media storage
 ├── Dockerfile                 Multi-stage build (compile source → slim runtime image)
 └── .env.example               Backend env-var template
 
@@ -267,7 +267,7 @@ frontend/                      Frontend source (Vue 3 + Vite)
 ├── Dockerfile                 Nginx static hosting (HTTP :2000) + API proxy
 └── default.conf.template      Nginx site template (reverse proxy + caching)
 
-docker-compose.yml             Docker orchestration (Postgres / Redis / RustFS / backend / frontend)
+docker-compose.yml             Docker orchestration (Postgres / Redis / MusesAPI / optional nginx; media in R2)
 ```
 
 ## 🗺️ Roadmap

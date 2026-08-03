@@ -21,11 +21,8 @@ type Config struct {
 	SessionTTL        time.Duration
 	SessionSlideAfter time.Duration
 	CORSOrigins       []string
+	FrontendRoot      string
 	GeneratedRoot     string
-	RustFSEndpoint    string
-	RustFSBucket      string
-	RustFSAccessKey   string
-	RustFSSecretKey   string
 }
 
 func Load() (*Config, error) {
@@ -49,19 +46,16 @@ func Load() (*Config, error) {
 		SessionTTL:        time.Duration(envInt("SESSION_TTL_HOURS", 24)) * time.Hour,
 		SessionSlideAfter: time.Duration(envInt("SESSION_SLIDE_AFTER_HOURS", 22)) * time.Hour,
 		CORSOrigins:       envList("CORS_ORIGINS", []string{"http://localhost:5173", "http://127.0.0.1:5173"}),
+		FrontendRoot:      filepath.Clean(envString("FRONTEND_ROOT", "")),
 		GeneratedRoot: filepath.Clean(envString(
 			"GENERATED_ROOT",
 			// vivid-ai's own data dir (backend/data/generated) — NOT the Python
 			// original's tree. Generated outputs and user-uploaded reference
-			// images both live here and are served (cookie-authed) via /images.
+			// compatibility helpers still use this path in development. Production
+			// generated outputs and references are persisted in R2.
 			filepath.Join(wd, "data", "generated"),
 		)),
-		RustFSEndpoint:  envString("RUSTFS_ENDPOINT", ""),
-		RustFSBucket:    envString("RUSTFS_BUCKET", ""),
-		RustFSAccessKey: envString("RUSTFS_ACCESS_KEY", ""),
-		RustFSSecretKey: envString("RUSTFS_SECRET_KEY", ""),
 	}
-
 	return cfg, nil
 }
 

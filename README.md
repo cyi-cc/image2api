@@ -131,7 +131,7 @@
 - 模型管理(普通价 + 代理价 + 别名) · 账号管理(批量导入 / 去重 / 额度) · **并发分组** · **订单管理**(筛选 / 搜索 / 分页) · 全站日志 · 用户管理(设为代理 / 分配并发组 / 看累计充值 / 违禁触发次数) · CDK · 图片管理(多选批量删除 / zip 打包下载) · 展示位 · **站点公告** · 站点配置(含易支付、去AI特征开关与附加价格)
 - **违禁词管理**:后台增删违禁词(分页 + 多选批量删除),提示词命中即拦截(画图台 + API,不区分大小写),按词 / 按用户统计触发次数
 
-**🧰 工程亮点**:tls-client(Chrome JA3/JA4 指纹)稳定穿透 Cloudflare · 媒体存 S3/RustFS 经鉴权代理分发 + 保留期清理 · 自愈式维护轮询(恢复额度 / 刷新凭据 / 清理僵死任务并退款) · 一条命令 Docker 部署(TLS 交给你的反代)。
+**🧰 工程亮点**:tls-client(Chrome JA3/JA4 指纹)稳定穿透 Cloudflare · 媒体存 Cloudflare R2,通过公开自定义域分发 + 保留期清理 · 自愈式维护轮询(恢复额度 / 刷新凭据 / 清理僵死任务并退款) · Docker 部署(TLS 交给你的反代)。
 
 ## 🤖 支持的模型 / 供应商
 
@@ -173,9 +173,11 @@ curl https://你的域名/v1/images/edits \
 
 > 域名 + HTTPS 由你自己的反向代理处理(本项目不内置证书签发)。
 
-**Docker(推荐)**:`docker compose up -d --build` 一条命令拉起 PostgreSQL + Redis + RustFS + 后端 + 前端(nginx **HTTP 监听容器 2000 端口**),把你的反向代理指到 `http://<本机>:2000`(端口用 `WEB_PORT` 改;要改密码 / 密钥 / `CORS_ORIGINS`(反代走 HTTPS 时把 `COOKIE_SECURE` 设为 `true`),直接改 `docker-compose.yml` 里对应值即可)。
+部署前先在 Cloudflare R2 创建 Bucket、为它启用公开自定义域,并创建拥有 Object Read & Write 权限的 API Token。容器启动后在**管理后台 → 设置 → Cloudflare R2 存储**中填写配置;配置保存到 PostgreSQL 并立即生效,密钥不需要写入 Compose 或 `.env`。
 
-也可**从源码手动构建**,自备 **PostgreSQL · Redis · RustFS(或任意 S3)· 反向代理**:
+**Docker(推荐)**:直接运行 `docker compose up -d --build` 拉起 PostgreSQL + Redis + 单一 MusesAPI 服务(Go 后端内嵌 Vue 前端,HTTP 监听容器 2000 端口),不需要创建或上传 `.env`。打开 `http://<服务器IP>:2000`,注册首个管理员账号后进入设置页配置 R2。同级 Nginx 是可选 profile,仅在执行 `docker compose --profile proxy up -d` 时启动。
+
+也可**从源码手动构建**,自备 **PostgreSQL · Redis · Cloudflare R2 · 反向代理**:
 
 ```bash
 # 1. 创建空库(后端启动自动建表)
@@ -187,10 +189,6 @@ APP_ENV=production
 HTTP_ADDR=127.0.0.1:6666
 POSTGRES_DSN=host=127.0.0.1 user=postgres password=你的密码 dbname=vivid_ai port=5432 sslmode=disable TimeZone=Asia/Shanghai
 REDIS_ADDR=127.0.0.1:6379
-RUSTFS_ENDPOINT=http://127.0.0.1:9000
-RUSTFS_BUCKET=vivid-ai
-RUSTFS_ACCESS_KEY=你的AK
-RUSTFS_SECRET_KEY=你的SK
 CORS_ORIGINS=https://你的域名
 COOKIE_SECURE=true
 EOF
@@ -198,6 +196,20 @@ cd backend && go build -o bin/api ./cmd/api && ./bin/api   # 监听 127.0.0.1:66
 
 # 3. 构建前端(产物 frontend/dist)
 cd frontend && npm install && npm run build
+```
+
+设置页的 S3 API 可直接粘贴 Cloudflare 页面显示的完整地址(包括末尾 `/muses-r2bucket`),后端会自动拆分 Bucket。公开自定义域填写 `https://muses-r2bucket.ordoeden.com`。如需在浏览器中复制图片、ZIP 下载或把旧作品加入参考图,请在 R2 的“CORS 策略”中允许你的 MusesAPI 站点来源执行 `GET`/`HEAD`:
+
+```json
+[
+  {
+    "AllowedOrigins": ["https://你的MusesAPI域名", "http://你的服务器IP:2000"],
+    "AllowedMethods": ["GET", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["Content-Length", "Content-Type", "ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
 ```
 
 Nginx 反代(证书自行用 certbot / acme.sh):
@@ -230,7 +242,7 @@ server {
 |---|---|
 | 后端 | Go · gin · gorm(PostgreSQL)· go-redis · tls-client(Chrome 指纹) |
 | 前端 | Vue 3 · Vue Router · Vite · Tailwind CSS v4 |
-| 基础设施 | PostgreSQL · Redis · RustFS(S3 兼容)· Nginx |
+| 基础设施 | PostgreSQL · Redis · Cloudflare R2 · Nginx |
 
 ## 📦 仓库结构
 
@@ -259,7 +271,7 @@ backend/                       后端源码(Go)
 │   │   └── epay/              易支付(mapi 下单 + 回调 MD5 验签,积分充值)
 │   ├── repo/                  数据访问层(用户 / 模型 / 账号 / 日志 / CDK / 订单 / 并发组…)
 │   ├── service/              业务逻辑(生成调度、计费、账号池、保活、维护)
-│   └── storage/               RustFS / S3 媒体存储
+│   └── storage/               Cloudflare R2 媒体存储
 ├── Dockerfile                 多阶段构建(源码编译 → 精简运行镜像)
 └── .env.example               后端环境变量模板
 
@@ -273,7 +285,7 @@ frontend/                      前端源码(Vue 3 + Vite)
 ├── Dockerfile                 Nginx 静态托管(HTTP :2000)+ API 反代
 └── default.conf.template      Nginx 站点模板(反代 + 缓存策略)
 
-docker-compose.yml             Docker 编排(Postgres / Redis / RustFS / 后端 / 前端)
+docker-compose.yml             Docker 编排(Postgres / Redis / MusesAPI / 可选 Nginx;媒体使用 R2)
 .env.example → backend/.env    后端环境变量模板
 ```
 

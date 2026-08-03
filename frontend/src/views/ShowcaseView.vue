@@ -143,7 +143,7 @@ function pickImage(file) {
 }
 
 // Upload a NEW image as 底图 — click/drag the preview. Stored public under
-// branding/ in RustFS; form.image is set to the returned path immediately.
+// branding/ in R2; form.image is set to the returned path immediately.
 const scImgInput = ref(null)
 const scDragOver = ref(false)
 const uploadingImg = ref(false)

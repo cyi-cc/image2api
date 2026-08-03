@@ -17,7 +17,7 @@ FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata wget
 WORKDIR /app
 COPY --from=build /out/api /app/api
-# Local fallback for generated media / reference uploads (RustFS/S3 is primary).
+# Runtime working directory; generated media is stored in Cloudflare R2.
 RUN mkdir -p /app/data/generated && chmod +x /app/api
 ENV HTTP_ADDR=0.0.0.0:6666
 EXPOSE 6666

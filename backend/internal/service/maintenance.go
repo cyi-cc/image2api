@@ -261,12 +261,17 @@ func (m *MaintenanceService) pruneMedia(ctx context.Context) {
 		}
 	}
 	// The site logo is permanent too — pin it like a showcase image so the
-	// retention sweep never deletes it. site.logo is "/images/<key>".
+	// retention sweep never deletes it. New installs persist a public R2 URL;
+	// old installs may still have the legacy "/images/<key>" form.
 	if logo, _ := m.settings.GetValue(ctx, "site.logo"); strings.TrimSpace(logo) != "" {
 		if pinned == nil {
 			pinned = map[string]struct{}{}
 		}
-		pinned[strings.TrimPrefix(strings.TrimLeft(logo, "/"), "images/")] = struct{}{}
+		if key, ok := m.store.KeyFromPublicURL(logo); ok {
+			pinned[key] = struct{}{}
+		} else {
+			pinned[strings.TrimPrefix(strings.TrimLeft(logo, "/"), "images/")] = struct{}{}
+		}
 	}
 	removed, skipped := 0, 0
 	var clearedKeys []string

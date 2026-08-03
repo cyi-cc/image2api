@@ -2,6 +2,7 @@
 // In dev, requests use relative paths and are proxied by Vite to the backend.
 // For a separately-hosted frontend, set VITE_API_BASE (e.g. http://host:6060).
 import { auth, clearSession } from './auth'
+import { site } from './site'
 
 const BASE = import.meta.env.VITE_API_BASE || ''
 
@@ -49,11 +50,12 @@ export async function fetchHealth() {
 
 /** Absolute URL for a generated artifact (works in dev via proxy too). */
 export function generatedUrl(name) {
+  if (/^https?:\/\//i.test(name || '')) return name
+  if (site.mediaBaseUrl) return `${site.mediaBaseUrl}/${String(name || '').replace(/^\/+/, '')}`
   return `${BASE}/images/${name}`
 }
 
-/** Small thumbnail URL for list views. The server falls back to the original
- * when no thumbnail object exists (old images), so this is always safe. */
+/** Public R2 thumbnail URL for list views. */
 export function thumbUrl(name) {
-  return `${BASE}/images/${name}.thumb.jpg`
+  return `${generatedUrl(name)}.thumb.jpg`
 }

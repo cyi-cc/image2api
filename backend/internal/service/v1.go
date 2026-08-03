@@ -445,7 +445,7 @@ func (s *V1Service) prepareImageExecution(ctx context.Context, principal *APIPri
 	refCount := len(in.ReferenceImages)
 	// API-key (source "v1") requests don't persist the output: we return the image
 	// as base64 inline (OpenAI gpt-image-1 also returns only b64_json) and never
-	// upload to RustFS, so there's no URL. The event is still logged (empty file)
+	// upload to R2, so there's no URL. The event is still logged (empty file)
 	// for usage; the customer logs page hides source="v1" rows.
 	noStore := source == "v1"
 	var fileURL, relativePath string
@@ -611,7 +611,7 @@ func (s *V1Service) prepareImageExecution(ctx context.Context, principal *APIPri
 		}
 	}
 	if !noStore {
-		// Upload to RustFS. On failure the generation fails and credits are
+		// Upload to R2. On failure the generation fails and credits are
 		// refunded — we never fall back to local disk.
 		if err := s.store.Put(genCtx, relativePath, imageBytes, "image/png"); err != nil {
 			_ = s.refundIfNeeded(ctx, principal, eventID, price)
@@ -682,6 +682,7 @@ func (s *V1Service) prepareImageExecution(ctx context.Context, principal *APIPri
 		"provider":   modelItem.Provider,
 		"kind":       "image",
 		"url":        fileURL,
+		"file":       relativePath,
 		"elapsed_ms": elapsedMS,
 		"charged":    price,
 		"credits":    principalCredits(principal),
@@ -859,6 +860,7 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 		"provider":   modelItem.Provider,
 		"kind":       "video",
 		"url":        fileURL,
+		"file":       relativePath,
 		"elapsed_ms": elapsedMS,
 		"charged":    price,
 		"credits":    principalCredits(principal),
@@ -868,7 +870,7 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 // ===== /v1/videos — OpenAI Sora-style async jobs =====
 // POST /v1/videos charges + creates a pending event and renders in the
 // background; the render captures only the UPSTREAM video URL (no download, no
-// RustFS). GET /v1/videos/{id} polls status; /content proxies the upstream URL.
+// R2). GET /v1/videos/{id} polls status; /content proxies the upstream URL.
 
 // StartVideoJob validates+charges, creates the job event, kicks the render off in
 // the background, and returns the OpenAI video object (status "queued").
@@ -894,7 +896,7 @@ func (s *V1Service) StartVideoJob(ctx context.Context, principal *APIPrincipal, 
 }
 
 // runVideoJob renders the clip in the background, capturing the upstream URL
-// (downloadResult=false → no bytes, no RustFS) and storing it on the event.
+// (downloadResult=false → no bytes, no R2) and storing it on the event.
 func (s *V1Service) runVideoJob(ctx context.Context, principal *APIPrincipal, in V1VideoRequest, modelItem *model.ModelConfig, eventID, aspectRatio, resolution, duration string, price float64) {
 	genCtx, cancel := context.WithTimeout(ctx, 12*time.Minute)
 	defer cancel()
@@ -1393,16 +1395,19 @@ func imageExtFromBytes(b []byte) string {
 	}
 }
 
-// allocateOutput builds the object key (= relative path, user-scoped) and the
-// directly-downloadable URL pointing at this site's /images proxy. Nothing is
-// written here — the bytes are uploaded to RustFS by the caller.
+// allocateOutput builds the object key (= relative path, user-scoped) and its
+// directly-downloadable public R2 URL. Nothing is written here — the bytes are
+// uploaded through R2's authenticated S3 API by the caller.
 func (s *V1Service) allocateOutput(principal *APIPrincipal, ext, baseURL string) (string, string) {
 	userDir := s.userDir(principal)
 	filename := time.Now().Format("20060102-150405") + "-" + randomUpper(8) + "." + strings.TrimPrefix(ext, ".")
 	relativePath := filepath.ToSlash(filepath.Join(userDir, filename))
-	// OpenAI-style clients need a directly-downloadable absolute URL. When the
-	// inbound request's base URL is known, build "{scheme}://{host}/images/...";
-	// otherwise fall back to the relative path for backward compatibility.
+	if s.store != nil {
+		if publicURL := s.store.PublicURL(relativePath); publicURL != "" {
+			return publicURL, relativePath
+		}
+	}
+	// Development fallback when object storage is intentionally not configured.
 	if base := strings.TrimRight(strings.TrimSpace(baseURL), "/"); base != "" {
 		return base + "/images/" + relativePath, relativePath
 	}
@@ -1444,7 +1449,6 @@ func (s *V1Service) logPendingEvent(ctx context.Context, kind string, modelItem 
 func (s *V1Service) finishUnimplementedEvent(ctx context.Context, eventID string) error {
 	return s.events.UpdateStatus(ctx, eventID, "failed", "generation executor not implemented yet", 0)
 }
-
 
 // grokConcurrencyPerAccount is how many simultaneous generations one grok account
 // may run (grok tolerates 10, unlike the 1-per-account default elsewhere).

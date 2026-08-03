@@ -56,7 +56,7 @@ async function loadSite() {
     siteForm.email = c.email || ''; siteForm.shop = c.shop || ''
   }
 }
-// ---- logo (drag/click to stage; uploaded to RustFS only on 保存) ----
+// ---- logo (drag/click to stage; uploaded to R2 only on 保存) ----
 const logoStaged = ref('')      // dataUrl of a newly picked logo, pending save
 const logoRemove = ref(false)   // true → delete logo on save (back to default)
 const logoDragOver = ref(false)
@@ -79,7 +79,7 @@ function flashSite(msg) { siteErr.value = msg; setTimeout(() => (siteErr.value =
 
 async function saveSite() {
   siteBusy.value = true; siteSaved.value = false; siteErr.value = ''
-  // 1) logo first — upload the staged file (or delete) to RustFS, only on 保存.
+  // 1) logo first — upload the staged file (or delete) to R2, only on 保存.
   if (logoStaged.value) {
     const lr = await api('/settings/logo', jsonBody('POST', { data: logoStaged.value }))
     if (lr.ok && lr.data?.logo != null) { siteForm.logo = lr.data.logo; site.logo = lr.data.logo; applyFavicon(site.logo); logoStaged.value = '' }
@@ -207,6 +207,50 @@ async function testProxy() {
   }
 }
 
+// ---- Cloudflare R2 object storage (persisted in PostgreSQL, hot-reloaded) ----
+const r2 = reactive({
+  endpoint: '', region: 'auto', bucket_name: '', public_base_url: '',
+  access_key_id: '', secret_access_key: '', configured: false,
+})
+const r2Busy = ref(false); const r2Saved = ref(false); const r2Err = ref('')
+const r2TestBusy = ref(false); const r2Test = reactive({ ok: null, msg: '' })
+const r2Ready = computed(() =>
+  (r2.endpoint || '').trim() &&
+  (r2.public_base_url || '').trim() &&
+  (r2.access_key_id || '').trim() &&
+  ((r2.secret_access_key || '').trim() || r2.configured)
+)
+async function loadR2() {
+  const res = await api('/settings/r2')
+  if (res.ok && res.data) Object.assign(r2, res.data)
+}
+async function saveR2() {
+  r2Busy.value = true; r2Saved.value = false; r2Err.value = ''; r2Test.ok = null; r2Test.msg = ''
+  const payload = {
+    endpoint: r2.endpoint,
+    region: r2.region || 'auto',
+    bucket_name: r2.bucket_name,
+    public_base_url: r2.public_base_url,
+    access_key_id: r2.access_key_id,
+  }
+  if (r2.secret_access_key && r2.secret_access_key !== '***') payload.secret_access_key = r2.secret_access_key
+  const res = await api('/settings/r2', jsonBody('PUT', payload))
+  r2Busy.value = false
+  if (res.ok) {
+    Object.assign(r2, res.data?.data || {})
+    site.mediaBaseUrl = (r2.public_base_url || '').replace(/\/+$/, '')
+    r2Saved.value = true
+    setTimeout(() => (r2Saved.value = false), 2000)
+  } else r2Err.value = res.data?.detail || 'R2 配置保存失败'
+}
+async function testR2() {
+  r2TestBusy.value = true; r2Test.ok = null; r2Test.msg = ''
+  const res = await api('/settings/r2/test', { method: 'POST' })
+  r2TestBusy.value = false
+  r2Test.ok = res.ok
+  r2Test.msg = res.ok ? (res.data?.detail || 'R2 连接成功') : (res.data?.detail || 'R2 连接测试失败')
+}
+
 // Email-code requires SMTP to be configured (host saved) first.
 const smtpConfigured = computed(() => !!(smtp.host || '').trim())
 
@@ -288,11 +332,46 @@ async function saveCredits() {
   if (r.ok) { credSaved.value = true; setTimeout(() => (credSaved.value = false), 2000) }
 }
 
-onMounted(() => { loadSite(); loadReg(); loadSmtp(); loadCredits(); loadAnnouncement(); loadPay(); loadProxy(); loadLogs(); loadMedia(); loadDeai() })
+onMounted(() => { loadSite(); loadReg(); loadSmtp(); loadCredits(); loadAnnouncement(); loadPay(); loadProxy(); loadR2(); loadLogs(); loadMedia(); loadDeai() })
 </script>
 
 <template>
   <section class="space-y-5">
+    <!-- Cloudflare R2 -->
+    <div class="card p-5">
+      <div class="flex items-center justify-between mb-4">
+        <div>
+          <h2 class="text-sm font-semibold">Cloudflare R2 存储</h2>
+          <p class="text-xs text-slate-400 mt-1">图片、视频、Logo 和首页素材统一存入 R2。配置保存在 PostgreSQL，保存后立即生效，无需修改 Compose 或重启容器。</p>
+        </div>
+        <span v-if="r2Saved" class="text-xs text-emerald-300">已保存 ✓</span>
+        <span v-else class="text-xs" :class="r2.configured ? 'text-emerald-300' : 'text-amber-300'">{{ r2.configured ? '已配置' : '尚未配置' }}</span>
+      </div>
+      <div class="grid sm:grid-cols-2 gap-3">
+        <div class="sm:col-span-2">
+          <label class="flbl">S3 API</label>
+          <input v-model="r2.endpoint" placeholder="https://账户ID.r2.cloudflarestorage.com/muses-r2bucket" class="field font-mono" />
+          <p class="hint mt-1">可以直接粘贴 Cloudflare 页面复制的完整 S3 API；若地址末尾包含 Bucket，保存时会自动拆分。</p>
+        </div>
+        <div><label class="flbl">Bucket 名称</label><input v-model="r2.bucket_name" placeholder="muses-r2bucket（S3 API 已包含时可留空）" class="field" /></div>
+        <div><label class="flbl">Region</label><input v-model="r2.region" placeholder="auto" class="field" /></div>
+        <div class="sm:col-span-2">
+          <label class="flbl">公开访问地址 / 自定义域</label>
+          <input v-model="r2.public_base_url" placeholder="https://muses-r2bucket.ordoeden.com" class="field font-mono" />
+          <p class="hint mt-1">Bucket 必须允许公开读取；这里填写自定义域或已启用的 r2.dev 地址，不要填写 S3 API。</p>
+        </div>
+        <div><label class="flbl">Access Key ID</label><input v-model="r2.access_key_id" autocomplete="off" placeholder="R2 API Token Access Key ID" class="field font-mono" /></div>
+        <div><label class="flbl">Secret Access Key</label><input v-model="r2.secret_access_key" type="password" autocomplete="new-password" placeholder="留空表示不修改" class="field font-mono" /></div>
+      </div>
+      <p v-if="r2Err" class="text-xs text-rose-300 mt-3">{{ r2Err }}</p>
+      <div class="mt-4 flex items-center gap-2 flex-wrap">
+        <button @click="saveR2" :disabled="r2Busy || !r2Ready" class="btn-primary">{{ r2Busy ? '保存中…' : '保存 R2 配置' }}</button>
+        <button @click="testR2" :disabled="r2TestBusy || !r2.configured" class="btn-ghost">{{ r2TestBusy ? '测试中…' : '测试写入与删除' }}</button>
+        <span v-if="!r2Ready" class="text-xs text-slate-400">请填写 S3 API、公开地址和访问密钥</span>
+        <span v-else-if="r2Test.msg" class="text-xs" :class="r2Test.ok ? 'text-emerald-300' : 'text-rose-300'">{{ r2Test.msg }}</span>
+      </div>
+    </div>
+
     <!-- site -->
     <div class="card p-5">
       <div class="flex items-center justify-between mb-4">

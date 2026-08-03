@@ -1,8 +1,8 @@
-// Package storage is a minimal S3-compatible client for RustFS, implemented with
-// AWS Signature V4 over the standard library only (no external SDK — the build
-// environment can't reach the Go module proxy). It's intentionally small: Put /
-// Get / Delete / List cover everything the app needs (store generated media,
-// proxy it back through /images, list for the admin gallery, prune by age).
+// Package storage implements the subset of Cloudflare R2's S3-compatible API
+// used by MusesAPI. It signs requests with AWS Signature V4 using only the Go
+// standard library. Put / Get / Delete / List cover generated media, the
+// public media URLs, the legacy /images proxy, the admin gallery, and retention
+// cleanup.
 //
 // The surface mirrors what a thin wrapper over aws-sdk-go-v2 would expose, so it
 // can be swapped for the official SDK later by reimplementing this one file.
@@ -18,21 +18,34 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
-const (
-	region  = "us-east-1" // RustFS ignores the value but SigV4 requires a fixed one
-	service = "s3"
-)
+const service = "s3"
 
 type Client struct {
-	endpoint string // e.g. http://154.9.26.140:9000 (no trailing slash)
-	host     string // e.g. 154.9.26.140:9000
-	bucket   string
-	ak, sk   string
-	http     *http.Client
+	mu            sync.RWMutex
+	endpoint      string // e.g. https://<account>.r2.cloudflarestorage.com
+	host          string
+	region        string
+	bucket        string
+	publicBaseURL string
+	ak, sk        string
+	http          *http.Client
+}
+
+// R2Config is the runtime configuration stored in PostgreSQL. Endpoint is the
+// authenticated S3 API; PublicBaseURL is the public r2.dev/custom-domain base.
+type R2Config struct {
+	Endpoint        string `json:"endpoint"`
+	Region          string `json:"region"`
+	BucketName      string `json:"bucket_name"`
+	PublicBaseURL   string `json:"public_base_url"`
+	AccessKeyID     string `json:"access_key_id"`
+	SecretAccessKey string `json:"secret_access_key"`
 }
 
 // Object is one entry returned by List.
@@ -42,36 +55,169 @@ type Object struct {
 	LastModified time.Time
 }
 
-// New builds a client. endpoint must include the scheme (http:// or https://).
-func New(endpoint, bucket, accessKey, secretKey string) *Client {
-	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
-	host := endpoint
-	if i := strings.Index(host, "://"); i >= 0 {
-		host = host[i+3:]
+// NewR2 builds a Cloudflare R2 client. endpoint must be the account-level S3
+// API endpoint (https://<ACCOUNT_ID>.r2.cloudflarestorage.com), not an r2.dev or
+// custom public-domain URL. Cloudflare's signing region is normally "auto".
+func NewR2(endpoint, region, bucket, publicBaseURL, accessKeyID, secretAccessKey string) *Client {
+	c := &Client{http: &http.Client{Timeout: 60 * time.Second}}
+	_ = c.Configure(R2Config{
+		Endpoint: endpoint, Region: region, BucketName: bucket,
+		PublicBaseURL: publicBaseURL, AccessKeyID: accessKeyID,
+		SecretAccessKey: secretAccessKey,
+	})
+	return c
+}
+
+// NormalizeR2Config validates and canonicalizes settings entered in the admin
+// UI. Cloudflare's copied S3 API may include /<bucket>; accept that form and
+// split it automatically so signed requests never contain the bucket twice.
+func NormalizeR2Config(in R2Config) (R2Config, error) {
+	in.Endpoint = strings.TrimRight(strings.TrimSpace(in.Endpoint), "/")
+	in.Region = strings.TrimSpace(in.Region)
+	if in.Region == "" {
+		in.Region = "auto"
 	}
-	return &Client{
-		endpoint: endpoint,
-		host:     host,
-		bucket:   strings.TrimSpace(bucket),
-		ak:       strings.TrimSpace(accessKey),
-		sk:       strings.TrimSpace(secretKey),
-		http:     &http.Client{Timeout: 60 * time.Second},
+	in.BucketName = strings.Trim(strings.TrimSpace(in.BucketName), "/")
+	in.PublicBaseURL = strings.TrimRight(strings.TrimSpace(in.PublicBaseURL), "/")
+	in.AccessKeyID = strings.TrimSpace(in.AccessKeyID)
+	in.SecretAccessKey = strings.TrimSpace(in.SecretAccessKey)
+
+	parsed, err := url.Parse(in.Endpoint)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return R2Config{}, fmt.Errorf("S3 API 必须是完整的 HTTPS 地址")
 	}
+	if parsed.Scheme != "https" {
+		return R2Config{}, fmt.Errorf("S3 API 必须使用 HTTPS")
+	}
+	if !strings.HasSuffix(strings.ToLower(parsed.Hostname()), ".r2.cloudflarestorage.com") {
+		return R2Config{}, fmt.Errorf("S3 API 必须使用 Cloudflare R2 域名")
+	}
+	pathBucket := strings.Trim(parsed.Path, "/")
+	if strings.Contains(pathBucket, "/") {
+		return R2Config{}, fmt.Errorf("S3 API 路径格式不正确")
+	}
+	if pathBucket != "" {
+		if in.BucketName == "" {
+			in.BucketName = pathBucket
+		} else if in.BucketName != pathBucket {
+			return R2Config{}, fmt.Errorf("S3 API 中的 Bucket 与 Bucket 名称不一致")
+		}
+		parsed.Path = ""
+		in.Endpoint = parsed.String()
+	}
+	if in.BucketName == "" {
+		return R2Config{}, fmt.Errorf("请填写 Bucket 名称")
+	}
+	publicURL, err := url.Parse(in.PublicBaseURL)
+	if err != nil || publicURL.Scheme == "" || publicURL.Host == "" {
+		return R2Config{}, fmt.Errorf("公开访问地址必须是完整的 HTTPS 地址")
+	}
+	if publicURL.Scheme != "https" {
+		return R2Config{}, fmt.Errorf("公开访问地址必须使用 HTTPS")
+	}
+	if publicURL.RawQuery != "" || publicURL.Fragment != "" {
+		return R2Config{}, fmt.Errorf("公开访问地址不能包含查询参数或片段")
+	}
+	if in.AccessKeyID == "" || in.SecretAccessKey == "" {
+		return R2Config{}, fmt.Errorf("请填写 Access Key ID 和 Secret Access Key")
+	}
+	return in, nil
+}
+
+// Configure atomically replaces the active storage settings. In-flight calls
+// finish using the old settings; subsequent calls immediately use the new ones.
+func (c *Client) Configure(in R2Config) error {
+	if c == nil {
+		return fmt.Errorf("R2 client is nil")
+	}
+	// An entirely empty config is valid during first-run setup.
+	if strings.TrimSpace(in.Endpoint) == "" && strings.TrimSpace(in.BucketName) == "" &&
+		strings.TrimSpace(in.PublicBaseURL) == "" && strings.TrimSpace(in.AccessKeyID) == "" &&
+		strings.TrimSpace(in.SecretAccessKey) == "" {
+		c.mu.Lock()
+		c.endpoint, c.host, c.region, c.bucket, c.publicBaseURL, c.ak, c.sk = "", "", "auto", "", "", "", ""
+		c.mu.Unlock()
+		return nil
+	}
+	normalized, err := NormalizeR2Config(in)
+	if err != nil {
+		return err
+	}
+	parsed, _ := url.Parse(normalized.Endpoint)
+	c.mu.Lock()
+	c.endpoint = normalized.Endpoint
+	c.host = parsed.Host
+	c.region = normalized.Region
+	c.bucket = normalized.BucketName
+	c.publicBaseURL = normalized.PublicBaseURL
+	c.ak = normalized.AccessKeyID
+	c.sk = normalized.SecretAccessKey
+	c.mu.Unlock()
+	return nil
 }
 
 // Configured reports whether the client has the minimum config to be usable.
 func (c *Client) Configured() bool {
-	return c != nil && c.endpoint != "" && c.bucket != "" && c.ak != "" && c.sk != ""
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.endpoint != "" && c.bucket != "" && c.publicBaseURL != "" && c.ak != "" && c.sk != ""
 }
 
-// PublicURL is the direct object URL (used only for reference/debugging — the app
-// serves through the authenticated /images proxy, not this).
+func (c *Client) PublicBaseURL() string {
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.publicBaseURL
+}
+
+// PublicURL returns the browser-readable URL for an object in the public bucket.
+// The authenticated S3 endpoint is deliberately never exposed to browsers.
 func (c *Client) PublicURL(key string) string {
-	return c.endpoint + "/" + c.bucket + "/" + strings.TrimPrefix(key, "/")
+	if c == nil {
+		return ""
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.publicBaseURL == "" {
+		return ""
+	}
+	return c.publicBaseURL + "/" + uriEncode(strings.TrimPrefix(key, "/"), true)
+}
+
+// KeyFromPublicURL converts a URL previously returned by PublicURL back into an
+// object key. This is used when replacing/deleting persisted branding URLs.
+func (c *Client) KeyFromPublicURL(raw string) (string, bool) {
+	if c == nil {
+		return "", false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.publicBaseURL == "" {
+		return "", false
+	}
+	prefix := c.publicBaseURL + "/"
+	if !strings.HasPrefix(strings.TrimSpace(raw), prefix) {
+		return "", false
+	}
+	key, err := url.PathUnescape(strings.TrimPrefix(strings.TrimSpace(raw), prefix))
+	if err != nil {
+		return "", false
+	}
+	if key == "" || strings.Contains(key, "..") {
+		return "", false
+	}
+	return key, true
 }
 
 // Put uploads body under key with the given content type.
 func (c *Client) Put(ctx context.Context, key string, body []byte, contentType string) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	resp, err := c.do(ctx, http.MethodPut, c.bucket+"/"+key, nil, body, contentType, nil)
 	if err != nil {
 		return err
@@ -87,6 +233,8 @@ func (c *Client) Put(ctx context.Context, key string, body []byte, contentType s
 // non-empty rangeHeader is forwarded verbatim (for video seeking). Returns the
 // raw *http.Response so headers/status can be passed through by the proxy.
 func (c *Client) Get(ctx context.Context, key, rangeHeader string) (*http.Response, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	extra := map[string]string{}
 	if strings.TrimSpace(rangeHeader) != "" {
 		extra["Range"] = rangeHeader
@@ -96,6 +244,8 @@ func (c *Client) Get(ctx context.Context, key, rangeHeader string) (*http.Respon
 
 // Delete removes key. A missing object is not an error.
 func (c *Client) Delete(ctx context.Context, key string) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	resp, err := c.do(ctx, http.MethodDelete, c.bucket+"/"+key, nil, nil, "", nil)
 	if err != nil {
 		return err
@@ -109,6 +259,8 @@ func (c *Client) Delete(ctx context.Context, key string) error {
 
 // List returns every object whose key starts with prefix (paginated internally).
 func (c *Client) List(ctx context.Context, prefix string) ([]Object, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	var out []Object
 	token := ""
 	for {
@@ -126,7 +278,7 @@ func (c *Client) List(ctx context.Context, prefix string) ([]Object, error) {
 		data, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		if resp.StatusCode/100 != 2 {
-			return nil, fmt.Errorf("rustfs list: status %d: %s", resp.StatusCode, truncate(data))
+			return nil, fmt.Errorf("r2 list: status %d: %s", resp.StatusCode, truncate(data))
 		}
 		var parsed struct {
 			Contents []struct {
@@ -138,7 +290,7 @@ func (c *Client) List(ctx context.Context, prefix string) ([]Object, error) {
 			NextContinuationToken string `xml:"NextContinuationToken"`
 		}
 		if err := xml.Unmarshal(data, &parsed); err != nil {
-			return nil, fmt.Errorf("rustfs list: parse: %w", err)
+			return nil, fmt.Errorf("r2 list: parse: %w", err)
 		}
 		for _, it := range parsed.Contents {
 			out = append(out, Object{Key: it.Key, Size: it.Size, LastModified: it.LastModified})
@@ -153,7 +305,7 @@ func (c *Client) List(ctx context.Context, prefix string) ([]Object, error) {
 
 func (c *Client) statusErr(op, key string, resp *http.Response) error {
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-	return fmt.Errorf("rustfs %s %q: status %d: %s", op, key, resp.StatusCode, truncate(data))
+	return fmt.Errorf("r2 %s %q: status %d: %s", op, key, resp.StatusCode, truncate(data))
 }
 
 func truncate(b []byte) string {
@@ -167,6 +319,9 @@ func truncate(b []byte) string {
 // do builds, signs (SigV4) and sends a request. resourcePath is the path after
 // the host WITHOUT a leading slash (e.g. "bucket/dir/file.png" or "bucket").
 func (c *Client) do(ctx context.Context, method, resourcePath string, query map[string]string, body []byte, contentType string, extraHeaders map[string]string) (*http.Response, error) {
+	if c.endpoint == "" || c.bucket == "" || c.ak == "" || c.sk == "" {
+		return nil, fmt.Errorf("R2 尚未配置")
+	}
 	now := time.Now().UTC()
 	amzDate := now.Format("20060102T150405Z")
 	dateStamp := now.Format("20060102")
@@ -196,11 +351,11 @@ func (c *Client) do(ctx context.Context, method, resourcePath string, query map[
 		method, canonicalURI, canonicalQuery, canonHeaders.String(), signedHeaders, payloadHash,
 	}, "\n")
 
-	scope := dateStamp + "/" + region + "/" + service + "/aws4_request"
+	scope := dateStamp + "/" + c.region + "/" + service + "/aws4_request"
 	stringToSign := strings.Join([]string{
 		"AWS4-HMAC-SHA256", amzDate, scope, hexSHA256([]byte(canonicalRequest)),
 	}, "\n")
-	signature := hex.EncodeToString(hmacSHA256(signingKey(c.sk, dateStamp), []byte(stringToSign)))
+	signature := hex.EncodeToString(hmacSHA256(signingKey(c.sk, dateStamp, c.region), []byte(stringToSign)))
 	auth := fmt.Sprintf("AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",
 		c.ak, scope, signedHeaders, signature)
 
@@ -242,7 +397,7 @@ func hmacSHA256(key, msg []byte) []byte {
 	return h.Sum(nil)
 }
 
-func signingKey(secret, dateStamp string) []byte {
+func signingKey(secret, dateStamp, region string) []byte {
 	kDate := hmacSHA256([]byte("AWS4"+secret), []byte(dateStamp))
 	kRegion := hmacSHA256(kDate, []byte(region))
 	kService := hmacSHA256(kRegion, []byte(service))

@@ -39,6 +39,13 @@ func NewAdminReadService(cfg *config.Config, users *repo.UserRepository, models 
 	}
 }
 
+func (s *AdminReadService) PublicMediaURL(key string) string {
+	if strings.TrimSpace(key) == "" || s.store == nil {
+		return ""
+	}
+	return s.store.PublicURL(strings.ReplaceAll(strings.TrimSpace(key), "\\", "/"))
+}
+
 // showcaseFileList returns the homepage showcase image keys (no leading slash).
 // User-facing galleries and the admin image manager hide these files — they
 // belong to the public landing page, not to anyone's personal works.
@@ -713,7 +720,7 @@ func isReferenceFile(name string) bool {
 	return strings.Contains(name, "-ref-")
 }
 
-// scanGeneratedFiles lists media objects from RustFS (replacing the old local
+// scanGeneratedFiles lists media objects from R2 (replacing the old local
 // directory walk). Keys ARE the relative paths the rest of the app expects.
 func (s *AdminReadService) scanGeneratedFiles(ctx context.Context) ([]generatedFile, map[string]any, error) {
 	stats := map[string]any{"total": 0, "image": 0, "video": 0, "size_bytes": int64(0)}

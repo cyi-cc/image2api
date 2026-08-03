@@ -164,6 +164,7 @@ func (h *AdminReadHandler) Logs(c *gin.Context) {
 			"cost":       item.Cost,
 			"elapsed_ms": item.ElapsedMS,
 			"file":       emptyStringNil(item.File),
+			"url":        emptyStringNil(h.admin.PublicMediaURL(item.File)),
 			"error":      emptyStringNil(item.Error),
 			"created_at": unixSec(item.CreatedAt),
 			"updated_at": unixSec(item.UpdatedAt),

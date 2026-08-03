@@ -277,11 +277,9 @@ function onDragLeave(ev) {
 }
 function removeRef(i) { refImages.value.splice(i, 1) }
 
-// Re-hydrate reference thumbnails from server URLs (after a reload). Fetches
-// each /images URL (same-origin, cookie-authed) and converts to a data URL so
-// the thumbnail renders AND the ref can be re-submitted unchanged. Shared by
+// Re-hydrate reference thumbnails from public R2 URLs after a reload. Shared by
 // image and video — both persist their refs the same way server-side.
-// Re-display refs by URL only — the thumbnail renders straight from /images/<ref>.
+// Re-display refs by URL only — the thumbnail renders straight from R2.
 // We DON'T fetch+convert here; conversion to base64 happens lazily at submit time
 // (refToBase64), so a ref that's only viewed never needs a network round-trip.
 function restoreRefs(urls) {
@@ -405,6 +403,7 @@ async function fireOne() {
     duration: mode.value === 'video' ? duration.value : '',
     deai: mode.value === 'image' && deaiEnabled.value ? deai.value : false,
     status: 'pending',
+    file: '',
     url: '',
     error: '',
     elapsed_ms: 0,
@@ -437,6 +436,7 @@ async function fireOne() {
     if (r.ok && r.data?.url) {
       task.status = 'done'
       task.url = r.data.url
+      task.file = r.data.file || ''
       task.elapsed_ms = r.data.elapsed_ms
       task.charged = r.data.charged ?? chargedPrice
       if (auth.user && r.data.credits != null) auth.user.credits = r.data.credits
@@ -473,7 +473,8 @@ async function loadHistory() {
       prompt: e.prompt, model: e.model, kind: e.kind,
       ratio: e.ratio, resolution: e.resolution, duration: e.duration, deai: !!e.deai,
       status: e.status === 'success' ? 'done' : 'running',
-      url: e.file ? generatedUrl(e.file) : '',
+      file: e.file || '',
+      url: e.url || (e.file ? generatedUrl(e.file) : ''),
       error: '',
       elapsed_ms: e.elapsed_ms,
     }))
@@ -496,7 +497,7 @@ async function loadHistory() {
 async function deleteItem(item) {
   if (!item || !item.url) return
   if (!confirm('确定删除这个作品？删除后不可恢复')) return
-  const rel = (item.url || '').split('?')[0].split('/images/').pop()
+  const rel = item.file || (item.url || '').split('?')[0].split('/images/').pop()
   const r = await api('/my-files?file=' + encodeURIComponent(rel), { method: 'DELETE' })
   if (r.ok) {
     tasks.value = tasks.value.filter((t) => t.id !== item.id)

@@ -24,9 +24,11 @@ func NewImageHandler(cfg *config.Config, imageAccess *service.ImageAccessService
 	}
 }
 
-// Serve gates access (public showcase images, or a logged-in cookie — a regular
+// Serve is the backwards-compatible /images reader for URLs persisted by older
+// releases. New releases return the public R2 custom-domain URL directly. It
+// gates access (public showcase images, or a logged-in cookie — a regular
 // user only their own images, an admin anyone's) and then PROXIES the object
-// from RustFS. Nothing is read from local disk; the RustFS endpoint is never
+// from R2. Nothing is read from local disk; the R2 endpoint is never
 // exposed to the client.
 func (h *ImageHandler) Serve(c *gin.Context) {
 	user := c.Param("user")

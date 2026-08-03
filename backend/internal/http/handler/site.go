@@ -26,6 +26,7 @@ func (h *SiteHandler) Public(c *gin.Context) {
 		"title":              title,
 		"logo":               h.site.Logo(ctx),
 		"subtitle":           h.site.Subtitle(ctx),
+		"media_base_url":     h.site.MediaBaseURL(),
 		"cdk_redeem_enabled": h.site.CDKRedeemEnabled(ctx),
 		"contact":            h.site.Contact(ctx),
 	})

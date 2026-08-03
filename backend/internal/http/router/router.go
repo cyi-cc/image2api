@@ -1,7 +1,15 @@
 package router
 
 import (
+	"io/fs"
+	"mime"
+	"net/http"
+	"os"
+	"path"
+	"strings"
+
 	"backend/internal/config"
+	frontendassets "backend/internal/frontend"
 	"backend/internal/http/handler"
 	"backend/internal/http/middleware"
 	"backend/internal/service"
@@ -177,6 +185,9 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 			settings.GET("/proxy", handlers.AppSettings.ProxyGet)
 			settings.PUT("/proxy", handlers.AppSettings.ProxyPut)
 			settings.POST("/proxy/test", handlers.AppSettings.ProxyTest)
+			settings.GET("/r2", handlers.AppSettings.R2Get)
+			settings.PUT("/r2", handlers.AppSettings.R2Put)
+			settings.POST("/r2/test", handlers.AppSettings.R2Test)
 			settings.GET("/credits", handlers.AppSettings.CreditsGet)
 			settings.PUT("/credits", handlers.AppSettings.CreditsPut)
 			settings.GET("/logs", handlers.AppSettings.LogsGet)
@@ -204,5 +215,66 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 		authGroup.POST("/redeem-cdk", handlers.UserTools.RedeemCDK)
 	}
 
+	frontendFS := frontendassets.FS()
+	if root := strings.TrimSpace(cfg.FrontendRoot); root != "" && root != "." {
+		frontendFS = os.DirFS(root)
+	}
+	serveFrontend(engine, frontendFS)
+
 	return engine
+}
+
+// serveFrontend makes the production Go process serve the built Vue SPA. This
+// keeps the combined MusesAPI image single-process while still allowing nginx
+// or Caddy to be run as a completely separate, optional reverse proxy.
+func serveFrontend(engine *gin.Engine, assets fs.FS) {
+	if assets == nil {
+		return
+	}
+	index, err := fs.ReadFile(assets, "index.html")
+	if err != nil {
+		return
+	}
+	if strings.Contains(string(index), "MusesAPI frontend was not built") {
+		return
+	}
+
+	engine.NoRoute(func(c *gin.Context) {
+		requestPath := c.Request.URL.Path
+		if isBackendPath(requestPath) {
+			c.JSON(http.StatusNotFound, gin.H{"detail": "endpoint not found"})
+			return
+		}
+
+		rel := strings.TrimPrefix(path.Clean("/"+requestPath), "/")
+		if data, err := fs.ReadFile(assets, rel); err == nil {
+			contentType := mime.TypeByExtension(path.Ext(rel))
+			if contentType == "" {
+				contentType = http.DetectContentType(data)
+			}
+			if strings.HasPrefix(rel, "assets/") {
+				c.Header("Cache-Control", "public, max-age=31536000, immutable")
+			}
+			c.Data(http.StatusOK, contentType, data)
+			return
+		}
+
+		// Unknown routes belong to Vue Router. Missing static assets should remain
+		// real 404s instead of receiving index.html with the wrong content type.
+		if strings.HasPrefix(requestPath, "/assets/") {
+			c.Status(http.StatusNotFound)
+			return
+		}
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		c.Data(http.StatusOK, "text/html; charset=utf-8", index)
+	})
+}
+
+func isBackendPath(path string) bool {
+	for _, prefix := range []string{"/admin/api", "/v1", "/images", "/health"} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }

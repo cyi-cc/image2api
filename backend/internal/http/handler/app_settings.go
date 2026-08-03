@@ -17,7 +17,7 @@ func NewAppSettingsHandler(settings *service.AppSettingsService) *AppSettingsHan
 	return &AppSettingsHandler{settings: settings}
 }
 
-// LogoUpload stores a base64 image as the site logo in RustFS (deleting the old
+// LogoUpload stores a base64 image as the site logo in R2 (deleting the old
 // one) and persists site.logo. Called on 保存 — not on file pick.
 func (h *AppSettingsHandler) LogoUpload(c *gin.Context) {
 	var body struct {
@@ -53,7 +53,7 @@ func (h *AppSettingsHandler) LogoUpload(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "logo": url})
 }
 
-// AssetUpload stores a public image (homepage 底图 etc.) in RustFS and returns
+// AssetUpload stores a public image (homepage 底图 etc.) in R2 and returns
 // its storage path for the caller to save (e.g. as a showcase card's image).
 func (h *AppSettingsHandler) AssetUpload(c *gin.Context) {
 	var body struct {
@@ -198,6 +198,37 @@ func (h *AppSettingsHandler) ProxyTest(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true, "data": data})
+}
+
+func (h *AppSettingsHandler) R2Get(c *gin.Context) {
+	data, err := h.settings.R2(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to load R2 settings"})
+		return
+	}
+	c.JSON(http.StatusOK, data)
+}
+
+func (h *AppSettingsHandler) R2Put(c *gin.Context) {
+	var body service.R2Settings
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request body"})
+		return
+	}
+	data, err := h.settings.SaveR2(c.Request.Context(), body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "data": data})
+}
+
+func (h *AppSettingsHandler) R2Test(c *gin.Context) {
+	if err := h.settings.TestR2(c.Request.Context()); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "detail": "R2 写入和删除测试成功"})
 }
 
 func (h *AppSettingsHandler) CreditsGet(c *gin.Context) {
