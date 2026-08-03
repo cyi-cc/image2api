@@ -40,12 +40,15 @@ const isVideo = computed(() => entry.value?.type === 'video')
 // Display tiers in canonical ascending order (720p before 1080p; 1K<2K<4K)
 // regardless of how the catalog/stored record happens to list them.
 const resolutions = computed(() => sortResolutions(entry.value?.resolutions || []))
-// Duration tiers for the price inputs. Prefer the declared `durations`; fall
-// back to the keys of any stored duration_prices so a model saved without a
-// `durations` array (the legacy sync bug) is still viewable/editable.
+const isPerSecond = computed(() => {
+  const id = entry.value?.id || ''
+  return id.startsWith('seedance')
+})
+
 const durationTiers = computed(() => {
   const e = entry.value
   if (!e) return []
+  if (isPerSecond.value) return ['per_second']
   const ds = e.durations || []
   return ds.length ? ds : Object.keys(e.duration_prices || {})
 })
@@ -67,7 +70,12 @@ function resetPrices(e) {
   // (real video price = resolution price + duration price).
   for (const r of (e.resolutions || [])) { imagePrices.value[r] = ''; imagePricesAgent.value[r] = '' }
   if (e.type === 'video') {
-    for (const d of (e.durations || [])) { videoPrices.value[d] = ''; videoPricesAgent.value[d] = '' }
+    if (isPerSecond.value) {
+      videoPrices.value['per_second'] = ''
+      videoPricesAgent.value['per_second'] = ''
+    } else {
+      for (const d of (e.durations || [])) { videoPrices.value[d] = ''; videoPricesAgent.value[d] = '' }
+    }
   }
 }
 
@@ -88,10 +96,15 @@ onMounted(async () => {
       imagePricesAgent.value[r] = m.prices_agent?.[r] ?? ''
     }
     if (m.type === 'video') {
-      const durs = (m.durations && m.durations.length) ? m.durations : Object.keys(m.duration_prices || {})
-      for (const d of durs) {
-        videoPrices.value[d] = m.duration_prices?.[d] ?? ''
-        videoPricesAgent.value[d] = m.duration_prices_agent?.[d] ?? ''
+      if (m.duration_prices?.per_second != null) {
+        videoPrices.value['per_second'] = m.duration_prices.per_second
+        videoPricesAgent.value['per_second'] = m.duration_prices_agent?.per_second ?? ''
+      } else {
+        const durs = (m.durations && m.durations.length) ? m.durations : Object.keys(m.duration_prices || {})
+        for (const d of durs) {
+          videoPrices.value[d] = m.duration_prices?.[d] ?? ''
+          videoPricesAgent.value[d] = m.duration_prices_agent?.[d] ?? ''
+        }
       }
     }
   }
@@ -116,12 +129,8 @@ async function save() {
 
   let payload
   if (e.type === 'video') {
-    // Real video price = resolution price + duration price. Both tiers are
-    // priced independently; a blank tier on either axis = unsupported. Charge
-    // happens server-side as prices[res] + duration_prices[dur].
     const prices = collect(imagePrices.value, e.resolutions || [])
     const duration_prices = collect(videoPrices.value, durationTiers.value)
-    // 代理价:可选覆盖,留空的档跟随普通价。
     const prices_agent = collect(imagePricesAgent.value, e.resolutions || [])
     const duration_prices_agent = collect(videoPricesAgent.value, durationTiers.value)
     if (!Object.keys(prices).length) { error.value = '至少填写一个分辨率价格'; return }
@@ -132,10 +141,7 @@ async function save() {
       ratios: e.ratios || [],
       resolutions: e.resolutions || [],
       prices,
-      // durations MUST track duration_prices — the model list / docs iterate
-      // `durations` to render the per-second price chips. Persisting prices
-      // without the matching durations array hides them. Keep them in sync.
-      durations: Object.keys(duration_prices),
+      durations: isPerSecond.value ? (e.durations || []) : Object.keys(duration_prices),
       duration_prices,
       prices_agent,
       duration_prices_agent,
@@ -282,7 +288,7 @@ async function save() {
                 </div>
               </div>
 
-              <!-- duration prices (video only): 普通价 + 代理价 -->
+              <!-- duration prices (video only): per-tier or per-second -->
               <div v-if="isVideo">
                 <label class="lbl">时长价格 <span class="text-white/35">(代理价留空 = 跟随普通价)</span></label>
                 <div v-if="durationTiers.length" class="space-y-2">
@@ -291,7 +297,7 @@ async function save() {
                     <span class="flex-1">代理价</span>
                   </div>
                   <div v-for="d in durationTiers" :key="d" class="flex items-center gap-2">
-                    <div class="w-12 shrink-0 text-sm text-white/85 font-mono">{{ d }}</div>
+                    <div class="w-12 shrink-0 text-sm text-white/85 font-mono">{{ d === 'per_second' ? '/s' : d }}</div>
                     <div class="relative flex-1">
                       <input v-model="videoPrices[d]" type="number" min="0" step="1" class="field !pr-10" placeholder="普通价" />
                       <span class="absolute right-2.5 top-1/2 -translate-y-1/2 text-white/30 text-[10px]">积分</span>
@@ -305,7 +311,8 @@ async function save() {
                 <p v-else class="text-xs text-white/35">该模型未声明时长档位</p>
               </div>
 
-              <p v-if="isVideo" class="text-[11px] text-white/40">实付 = 分辨率价 + 时长价(例:720p 50 + 5s 30 = 80 积分)</p>
+              <p v-if="isVideo && !isPerSecond" class="text-[11px] text-white/40">实付 = 分辨率价 + 时长价(例:720p 50 + 5s 30 = 80 积分)</p>
+              <p v-if="isPerSecond" class="text-[11px] text-white/40">实付 = 分辨率价 + 每秒价 × 秒数</p>
 
               <!-- display weight: admin-set ordering (not a catalog param) -->
               <div>

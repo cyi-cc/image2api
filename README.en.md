@@ -130,9 +130,9 @@ It's more than an API proxy: it ships with **credit billing, CDK top-ups, referr
 
 | Provider | Models (examples) | Type |
 |---|---|---|
-| **Adobe Firefly** | firefly-image-5 · firefly-gpt-image-2 · flux-kontext-max · firefly-video · firefly-ray · gemini-veo31 | Image / Video |
+| **Adobe Firefly** | firefly-image-5 · firefly-gpt-image-2 · flux-kontext-max · nano-banana-2 · nano-banana-pro · firefly-video · firefly-ray · gemini-veo31 | Image / Video |
 | **OpenAI** | gpt-image-2 | Image |
-| **Runway** | runway-gen4-turbo · nano-banana-2 (Nano Banana 2) | Video / Image |
+| **Runway** | runway-gen4-turbo · runway-nano-banana-2 (Nano Banana 2) · runway-nano-banana-pro (Nano Banana Pro) | Video / Image |
 | **Grok (grok.com)** | grok-video (imagine text/image-to-video) | Video |
 | **Leonardo.ai** | seedream-4.5 | Image |
 | **Krea.ai** | flux-klein-2 | Image |

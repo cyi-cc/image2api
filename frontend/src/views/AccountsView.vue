@@ -189,8 +189,10 @@ async function reconcile() {
         row._unknown = true
         updates++
       } else if (result && result.unchanged === false) {
-        if (row.type === 'adobe') row.reset_after = result.reset_after
-        else applyQuota(row, result)
+        if (row.type === 'adobe') {
+          row.reset_after = result.reset_after
+          applyQuota(row, result)
+        } else applyQuota(row, result)
         updates++
       }
       bump()
@@ -451,6 +453,9 @@ onMounted(() => { loadAccounts(); loadModelList() })
                    case. -->
               <div class="flex items-center gap-2 min-w-0">
                 <span class="text-sm text-white/90 truncate" :title="a.email || '-'">{{ a.email || '-' }}</span>
+                <span v-if="a.sub_account"
+                      class="shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/15 text-sky-300 ring-1 ring-sky-400/20"
+                      :title="'子号 (剩余 ' + (a.remaining ?? '—') + ' 积分)'">子号</span>
                 <span v-if="a.image_limited && a.status !== 'quota'"
                       class="shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/15 text-amber-300 ring-1 ring-amber-400/20"
                       title="图片额度耗尽，仅视频可用">图片限额</span>
@@ -468,7 +473,7 @@ onMounted(() => { loadAccounts(); loadModelList() })
             <td class="px-3 py-3.5 align-middle text-right text-sm tabular-nums whitespace-nowrap">
               <!-- quota column: 数字 / —  (never "未知"/"失败"/"检测中") -->
               <!-- remaining === -1 is the provider "unlimited" sentinel → show — not a scary red -1 -->
-              <span v-if="(a.type === 'openai' || a.type === 'runway' || a.type === 'leonardo' || a.type === 'krea' || a.type === 'imagine' || a.type === 'grok') && a.remaining != null && a.remaining !== -1"
+               <span v-if="(a.type === 'openai' || a.type === 'adobe' || a.type === 'runway' || a.type === 'leonardo' || a.type === 'krea' || a.type === 'imagine' || a.type === 'grok') && a.remaining != null && a.remaining !== -1"
                     class="font-mono font-semibold"
                     :class="a.remaining > 0 ? 'text-emerald-300' : 'text-rose-300'">{{ a.remaining }}{{ a.type === 'grok' ? '%' : '' }}</span>
               <span v-else class="text-white/25" :title="a._quotaError || ''">—</span>

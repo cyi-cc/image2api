@@ -10,18 +10,9 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
-)
-
-// arpPIDPool maps access tokens to unique PIDs so the same account always
-// reuses its PID and different accounts never collide. Guarded by arpPIDMu.
-var (
-	arpPIDMu    sync.Mutex
-	arpTokenPID = map[string]int{} // token → pid
-	arpPIDToken = map[int]string{} // pid → token
 )
 
 // adobeUserIDPat matches Adobe IMS user IDs embedded in cookies (e.g.
@@ -104,50 +95,17 @@ func decodeJWTPayload(token string) map[string]any {
 	return out
 }
 
-func buildARPSessionID(token string) string {
+func buildARPSessionID() string {
 	// Matches adobe2api's format exactly:
 	// base64({"sid":"<uuid>","ftr":"<hex16>_<ts_ms>_<pid>_dUAL43-mnts-ants-d4_31ck__tt"})
 	// Two fields only (no "ark") — mirrors what a real browser session sends.
-	ftr := randomHex(16) + "_" + strconv.FormatInt(time.Now().UnixMilli(), 10) + "_" + strconv.Itoa(allocPID(token)) + "_dUAL43-mnts-ants-d4_31ck__tt"
+	ftr := randomHex(16) + "_" + strconv.FormatInt(time.Now().UnixMilli(), 10) + "_" + strconv.Itoa(randomInt(1000, 99999)) + "_dUAL43-mnts-ants-d4_31ck__tt"
 	raw := map[string]any{
 		"sid": uuid.NewString(),
 		"ftr": ftr,
 	}
 	b, _ := json.Marshal(raw)
 	return base64.StdEncoding.EncodeToString(b)
-}
-
-// allocPID returns a unique PID bound to token. Same token always gets the
-// same PID; different tokens never share a PID. Picks randomly from
-// [1000, 99999] and retries on collision.
-func allocPID(token string) int {
-	arpPIDMu.Lock()
-	defer arpPIDMu.Unlock()
-
-	if pid, ok := arpTokenPID[token]; ok {
-		return pid
-	}
-	for {
-		pid := randomInt(1000, 99999)
-		if _, used := arpPIDToken[pid]; !used {
-			arpPIDToken[pid] = token
-			arpTokenPID[token] = pid
-			return pid
-		}
-	}
-}
-
-// ReleasePID releases the PID bound to token so it can be reused by another
-// account. Call this when a token/session is finished (e.g. after the Adobe
-// API request completes or on token expiry).
-func ReleasePID(token string) {
-	arpPIDMu.Lock()
-	defer arpPIDMu.Unlock()
-
-	if pid, ok := arpTokenPID[token]; ok {
-		delete(arpPIDToken, pid)
-		delete(arpTokenPID, token)
-	}
 }
 
 func randomHex(n int) string {

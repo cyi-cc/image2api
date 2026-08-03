@@ -34,10 +34,10 @@ const (
 
 var (
 	ErrAuth              = errors.New("adobe auth failed")
-	ErrAuthPermanent     = errors.New("adobe auth permanently failed")
 	ErrQuotaExhausted    = errors.New("adobe quota exhausted")
 	ErrTemporaryUpstream = errors.New("adobe upstream temporary error")
 	ErrDeadUpstream      = errors.New("adobe upstream fatal error")
+	ErrRateLimited       = errors.New("adobe rate limited")
 	// ErrContentRejected is Adobe's content-safety filter refusing the prompt or
 	// the generated image (HTTP 451 image_unsafe). It is the prompt's fault, not
 	// the account's — every account rejects the same content — so the caller must
@@ -53,21 +53,15 @@ func isContentRejection(status int, body string) bool {
 	return status == 451 && strings.Contains(body, "unsafe")
 }
 
-func isPermanentAuthError(header string, body []byte) bool {
-	return strings.EqualFold(header, "user_not_entitled") ||
-		strings.EqualFold(header, "access_error") ||
-		strings.Contains(string(body), "user_not_entitled") ||
-		strings.Contains(string(body), "access_error")
-}
-
 var profileURLs = []string{
 	"https://ims-na1.adobelogin.com/ims/profile/v1",
 	"https://adobeid-na1.services.adobe.com/ims/profile/v1",
 }
 
 type Client struct {
-	apiKey string
-	proxy  string
+	apiKey       string
+	proxy        string
+	arpSessionID string // cached per-client, reused across requests (matches adobe2api)
 }
 
 func NewClient(apiKey, proxy string) *Client {
@@ -77,6 +71,17 @@ func NewClient(apiKey, proxy string) *Client {
 	}
 }
 
+// getARPSessionID returns a cached ARP session id matching adobe2api's format:
+// base64({"sid":"<uuid>","ftr":"<hex16>_<ts_ms>_<pid>_dUAL43-mnts-ants-d4_31ck__tt"})
+// Generated once per client and reused — adobe2api reuses the same session id per
+// token/profile instead of rotating every request.
+func (c *Client) getARPSessionID() string {
+	if c.arpSessionID != "" {
+		return c.arpSessionID
+	}
+	c.arpSessionID = buildARPSessionID()
+	return c.arpSessionID
+}
 
 func (c *Client) SetProxy(proxy string) {
 	c.proxy = strings.TrimSpace(proxy)
@@ -93,7 +98,7 @@ func (c *Client) ExchangeCookie(ctx context.Context, cookie string) (*CookieExch
 // uploadMaxRetries is how many extra in-place attempts a transient upload
 // failure (transport error / timeout, 429/451/5xx) gets on a fresh connection
 // before the error is surfaced.
-const uploadMaxRetries = 3
+const uploadMaxRetries = 5
 
 // UploadImage stores a reference image and returns its blob id. Transient
 // failures are retried in place (uploadMaxRetries times); the final error keeps
@@ -103,13 +108,6 @@ func (c *Client) UploadImage(ctx context.Context, token string, content []byte, 
 	// Reference-image upload runs on the local IP (not the proxy).
 	body, err, retryable := c.uploadImageOnce(ctx, token, content, contentType, engine)
 	for attempt := 0; err != nil && retryable && attempt < uploadMaxRetries && ctx.Err() == nil; attempt++ {
-		if wait := time.Duration(attempt+1) * time.Second; wait > 0 {
-			select {
-			case <-ctx.Done():
-				return "", ctx.Err()
-			case <-time.After(wait):
-			}
-		}
 		body, err, retryable = c.uploadImageOnce(ctx, token, content, contentType, engine)
 	}
 	if err != nil {
@@ -137,7 +135,7 @@ func (c *Client) UploadImage(ctx context.Context, token string, content []byte, 
 // body plus whether a failure is retryable (transport error / 429/451/5xx).
 // Auth failures (401/403) and other non-200s are not retryable.
 func (c *Client) uploadImageOnce(ctx context.Context, token string, content []byte, contentType, engine string) ([]byte, error, bool) {
-	sess, err := c.newUploadTLSClient()
+	sess, err := c.newDirectTLSClient()
 	if err != nil {
 		return nil, err, false
 	}
@@ -179,12 +177,12 @@ func (c *Client) uploadImageOnce(ctx context.Context, token string, content []by
 		return nil, err, true
 	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		if isPermanentAuthError(resp.Header.Get("x-access-error"), body) {
-			return nil, fmt.Errorf("%w (upload %d %s: %s)", ErrAuthPermanent, resp.StatusCode, resp.Header.Get("x-access-error"), clip(body, 300)), false
-		}
 		return nil, fmt.Errorf("%w (upload %d %s: %s)", ErrAuth, resp.StatusCode, resp.Header.Get("x-access-error"), clip(body, 300)), false
 	}
-	if resp.StatusCode == 429 || resp.StatusCode == 451 || resp.StatusCode >= 500 {
+	if resp.StatusCode == 429 {
+		return nil, fmt.Errorf("%w (upload %d): %s", ErrRateLimited, resp.StatusCode, clip(body, 300)), false
+	}
+	if resp.StatusCode == 451 || resp.StatusCode >= 500 {
 		return nil, fmt.Errorf("adobe upload failed: %d %s", resp.StatusCode, clip(body, 300)), true
 	}
 	if resp.StatusCode != 200 {
@@ -195,18 +193,14 @@ func (c *Client) uploadImageOnce(ctx context.Context, token string, content []by
 
 func (c *Client) GenerateImage(ctx context.Context, token, modelID, prompt, aspectRatio, resolution string, blobIDs []string, downloadResult bool) ([]byte, map[string]any, error) {
 	// Only the generate submit goes through the proxy; polling + download run on
-	// the local IP. If the proxy connection fails, retry once on the local IP.
+	// the local IP.
 	submitSess, err := c.newTLSClient()
 	if err != nil {
 		return nil, nil, err
 	}
-	directSess, directErr := c.newDirectTLSClient()
 	pollSess, err := c.newDirectTLSClient()
 	if err != nil {
 		return nil, nil, err
-	}
-	if directErr != nil {
-		directSess = pollSess
 	}
 
 	var lastBody []byte
@@ -223,9 +217,6 @@ func (c *Client) GenerateImage(ctx context.Context, token, modelID, prompt, aspe
 	}
 	for _, payload := range candidates {
 		respBody, pollURL, err := c.submitImage(ctx, submitSess, token, prompt, endpoint, payload)
-		if errors.Is(err, ErrTemporaryUpstream) {
-			respBody, pollURL, err = c.submitImage(ctx, directSess, token, prompt, endpoint, payload)
-		}
 		if err == nil {
 			meta, data, pollErr := c.pollImage(ctx, pollSess, token, pollURL, downloadResult)
 			if pollErr != nil {
@@ -235,7 +226,7 @@ func (c *Client) GenerateImage(ctx context.Context, token, modelID, prompt, aspe
 		}
 		lastBody = respBody
 		lastErr = err
-		if errors.Is(err, ErrAuth) || errors.Is(err, ErrAuthPermanent) || errors.Is(err, ErrQuotaExhausted) || errors.Is(err, ErrContentRejected) {
+		if errors.Is(err, ErrAuth) || errors.Is(err, ErrQuotaExhausted) || errors.Is(err, ErrContentRejected) {
 			return nil, nil, err
 		}
 	}
@@ -265,13 +256,9 @@ func (c *Client) GenerateVideo(ctx context.Context, token, engine, prompt, aspec
 	if err != nil {
 		return nil, nil, err
 	}
-	directSess, directErr := c.newDirectTLSClient()
 	pollSess, err := c.newDirectTLSClient()
 	if err != nil {
 		return nil, nil, err
-	}
-	if directErr != nil {
-		directSess = pollSess
 	}
 
 	payload := BuildVideoPayload(engine, prompt, aspectRatio, durationSeconds, resolution, referenceMode, upstreamModel, blobIDs)
@@ -280,9 +267,6 @@ func (c *Client) GenerateVideo(ctx context.Context, token, engine, prompt, aspec
 		endpoint = fireflyVideoSubmitURL
 	}
 	respBody, pollURL, err := c.submitVideo(ctx, submitSess, token, endpoint, payload)
-	if errors.Is(err, ErrTemporaryUpstream) {
-		respBody, pollURL, err = c.submitVideo(ctx, directSess, token, endpoint, payload)
-	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -320,7 +304,6 @@ func (c *Client) FetchAccountProfile(ctx context.Context, token string) (map[str
 				"user-agent",
 			},
 		}
-		defer ReleasePID(token)
 
 		resp, err := sess.client.Do(req)
 		if err != nil {
@@ -429,9 +412,6 @@ func (c *Client) FetchCreditsBalance(ctx context.Context, token string) (map[str
 		return nil, err
 	}
 	if resp.StatusCode == 401 {
-		if isPermanentAuthError(resp.Header.Get("x-access-error"), body) {
-			return nil, ErrAuthPermanent
-		}
 		return nil, ErrAuth
 	}
 	if resp.StatusCode != 200 {
@@ -484,17 +464,16 @@ func (c *Client) submitImage(ctx context.Context, sess *tlsSession, token, promp
 		"x-api-key":          {c.apiKey},
 		"content-type":       {"application/json"},
 		"accept":             {"*/*"},
-		"origin":             {"https://firefly.adobe.com"},
-		"referer":            {"https://firefly.adobe.com/"},
+		"origin":             {"https://new.express.adobe.com"},
+		"referer":            {"https://new.express.adobe.com/"},
 		"accept-language":    {"en-US,en;q=0.9"},
 		"sec-ch-ua":          {sess.fp.secCHUA},
 		"sec-ch-ua-mobile":   {"?0"},
 		"sec-ch-ua-platform": {sess.fp.platform},
-		"sec-fetch-site":     {"same-site"},
+		"sec-fetch-site":     {"cross-site"},
 		"sec-fetch-mode":     {"cors"},
 		"sec-fetch-dest":     {"empty"},
 		"user-agent":         {sess.fp.userAgent},
-		"x-arp-session-id":   {buildARPSessionID(token)},
 		http.HeaderOrderKey: {
 			"authorization",
 			"x-api-key",
@@ -511,7 +490,6 @@ func (c *Client) submitImage(ctx context.Context, sess *tlsSession, token, promp
 			"sec-fetch-dest",
 			"user-agent",
 			"x-nonce",
-			"x-arp-session-id",
 		},
 	}
 	if nonce := buildSubmitNonce(token, prompt); nonce != "" {
@@ -531,9 +509,6 @@ func (c *Client) submitImage(ctx context.Context, sess *tlsSession, token, promp
 		if strings.EqualFold(resp.Header.Get("x-access-error"), "taste_exhausted") {
 			return respBody, "", ErrQuotaExhausted
 		}
-		if isPermanentAuthError(resp.Header.Get("x-access-error"), respBody) {
-			return respBody, "", fmt.Errorf("%w (submit %d %s: %s)", ErrAuthPermanent, resp.StatusCode, resp.Header.Get("x-access-error"), clip(respBody, 300))
-		}
 		return respBody, "", fmt.Errorf("%w (submit %d %s: %s)", ErrAuth, resp.StatusCode, resp.Header.Get("x-access-error"), clip(respBody, 300))
 	}
 	// "system under load" / timeout_error = adobe rate-limit/overload (can come on a
@@ -546,9 +521,6 @@ func (c *Client) submitImage(ctx context.Context, sess *tlsSession, token, promp
 	}
 	if resp.StatusCode == 429 || resp.StatusCode == 451 || resp.StatusCode >= 500 {
 		return respBody, "", ErrDeadUpstream
-	}
-	if strings.Contains(string(respBody), "access_error") {
-		return respBody, "", fmt.Errorf("%w (submit %d: %s)", ErrAuthPermanent, resp.StatusCode, clip(respBody, 300))
 	}
 	if resp.StatusCode != 200 {
 		return respBody, "", errors.New("submit rejected")
@@ -588,8 +560,8 @@ func (c *Client) pollImage(ctx context.Context, sess *tlsSession, token, pollURL
 		req.Header = http.Header{
 			"authorization": {"Bearer " + strings.TrimSpace(token)},
 			"accept":        {"*/*"},
-			"origin":        {"https://firefly.adobe.com"},
-			"referer":       {"https://firefly.adobe.com/"},
+			"origin":        {"https://new.express.adobe.com"},
+			"referer":       {"https://new.express.adobe.com/"},
 			"user-agent":    {sess.fp.userAgent},
 			http.HeaderOrderKey: {
 				"authorization",
@@ -599,7 +571,6 @@ func (c *Client) pollImage(ctx context.Context, sess *tlsSession, token, pollURL
 				"user-agent",
 			},
 		}
-		defer ReleasePID(token)
 
 		resp, err := sess.client.Do(req)
 		if err != nil {
@@ -669,17 +640,16 @@ func (c *Client) submitVideo(ctx context.Context, sess *tlsSession, token, endpo
 		"x-api-key":          {c.apiKey},
 		"content-type":       {"application/json"},
 		"accept":             {"*/*"},
-		"origin":             {"https://firefly.adobe.com"},
-		"referer":            {"https://firefly.adobe.com/"},
+		"origin":             {"https://new.express.adobe.com"},
+		"referer":            {"https://new.express.adobe.com/"},
 		"accept-language":    {"en-US,en;q=0.9"},
 		"sec-ch-ua":          {sess.fp.secCHUA},
 		"sec-ch-ua-mobile":   {"?0"},
 		"sec-ch-ua-platform": {sess.fp.platform},
-		"sec-fetch-site":     {"same-site"},
+		"sec-fetch-site":     {"cross-site"},
 		"sec-fetch-mode":     {"cors"},
 		"sec-fetch-dest":     {"empty"},
 		"user-agent":         {sess.fp.userAgent},
-		"x-arp-session-id":   {buildARPSessionID(token)},
 		http.HeaderOrderKey: {
 			"authorization",
 			"x-api-key",
@@ -696,7 +666,6 @@ func (c *Client) submitVideo(ctx context.Context, sess *tlsSession, token, endpo
 			"sec-fetch-dest",
 			"user-agent",
 			"x-nonce",
-			"x-arp-session-id",
 		},
 	}
 	// The working video submit (HAR) carries x-nonce just like the image submit.
@@ -720,9 +689,8 @@ func (c *Client) submitVideo(ctx context.Context, sess *tlsSession, token, endpo
 		if strings.EqualFold(resp.Header.Get("x-access-error"), "taste_exhausted") {
 			return respBody, "", ErrQuotaExhausted
 		}
-		if isPermanentAuthError(resp.Header.Get("x-access-error"), respBody) {
-			return respBody, "", fmt.Errorf("%w (%d %s: %s)", ErrAuthPermanent, resp.StatusCode, resp.Header.Get("x-access-error"), clip(respBody, 300))
-		}
+		// Surface Adobe's response body — "adobe auth failed" alone hides whether
+		// it's a bad token, a missing scope, or a WAF/fingerprint block.
 		return respBody, "", fmt.Errorf("%w (%d %s: %s)", ErrAuth, resp.StatusCode, resp.Header.Get("x-access-error"), clip(respBody, 300))
 	}
 	if isContentRejection(resp.StatusCode, string(respBody)) {
@@ -735,9 +703,6 @@ func (c *Client) submitVideo(ctx context.Context, sess *tlsSession, token, endpo
 	// error so the tempFailover policy moves to the next account (same as the image path).
 	if b := string(respBody); strings.Contains(b, "system under load") || strings.Contains(b, "timeout_error") {
 		return respBody, "", ErrTemporaryUpstream
-	}
-	if strings.Contains(string(respBody), "access_error") {
-		return respBody, "", fmt.Errorf("%w (%d: %s)", ErrAuthPermanent, resp.StatusCode, clip(respBody, 300))
 	}
 	if resp.StatusCode != 200 {
 		return respBody, "", fmt.Errorf("video submit rejected: %d %s", resp.StatusCode, clip(respBody, 300))
@@ -777,8 +742,8 @@ func (c *Client) pollVideo(ctx context.Context, sess *tlsSession, token, pollURL
 		req.Header = http.Header{
 			"authorization": {"Bearer " + strings.TrimSpace(token)},
 			"accept":        {"*/*"},
-			"origin":        {"https://firefly.adobe.com"},
-			"referer":       {"https://firefly.adobe.com/"},
+			"origin":        {"https://new.express.adobe.com"},
+			"referer":       {"https://new.express.adobe.com/"},
 			"user-agent":    {sess.fp.userAgent},
 			http.HeaderOrderKey: {
 				"authorization",
@@ -788,7 +753,6 @@ func (c *Client) pollVideo(ctx context.Context, sess *tlsSession, token, pollURL
 				"user-agent",
 			},
 		}
-		defer ReleasePID(token)
 
 		resp, err := sess.client.Do(req)
 		if err != nil {
@@ -800,9 +764,6 @@ func (c *Client) pollVideo(ctx context.Context, sess *tlsSession, token, pollURL
 			return nil, nil, readErr
 		}
 		if resp.StatusCode == 401 || resp.StatusCode == 403 {
-			if isPermanentAuthError(resp.Header.Get("x-access-error"), body) {
-				return nil, nil, fmt.Errorf("%w (%d %s: %s)", ErrAuthPermanent, resp.StatusCode, resp.Header.Get("x-access-error"), clip(body, 300))
-			}
 			return nil, nil, fmt.Errorf("%w (%d %s: %s)", ErrAuth, resp.StatusCode, resp.Header.Get("x-access-error"), clip(body, 300))
 		}
 		if b := string(body); strings.Contains(b, "system under load") || strings.Contains(b, "timeout_error") {
@@ -971,20 +932,16 @@ type tlsSession struct {
 // image-generation submit goes through the proxy; reference-image upload,
 // polling and result download run on the local IP.
 func (c *Client) newTLSClient() (*tlsSession, error) {
-	return c.newTLSSession(randomFingerprint(), true, 120)
+	return c.newTLSSession(randomFingerprint(), true)
 }
 
 func (c *Client) newDirectTLSClient() (*tlsSession, error) {
-	return c.newTLSSession(randomFingerprint(), false, 60)
+	return c.newTLSSession(randomFingerprint(), false)
 }
 
-func (c *Client) newUploadTLSClient() (*tlsSession, error) {
-	return c.newTLSSession(randomFingerprint(), false, 180)
-}
-
-func (c *Client) newTLSSession(fp fingerprint, useProxy bool, timeout int) (*tlsSession, error) {
+func (c *Client) newTLSSession(fp fingerprint, useProxy bool) (*tlsSession, error) {
 	options := []tlsclient.HttpClientOption{
-		tlsclient.WithTimeoutSeconds(timeout),
+		tlsclient.WithTimeoutSeconds(60),
 		tlsclient.WithClientProfile(fp.profile),
 		tlsclient.WithNotFollowRedirects(),
 		tlsclient.WithRandomTLSExtensionOrder(),
@@ -1023,8 +980,8 @@ func exchangeCookieWithTLSClient(ctx context.Context, sess *tlsSession, cookie s
 		"accept-language": {"zh-CN,zh;q=0.9"},
 		"content-type":    {"application/x-www-form-urlencoded;charset=UTF-8"},
 		"cookie":          {cookie},
-		"origin":          {"https://firefly.adobe.com"},
-		"referer":         {"https://firefly.adobe.com/"},
+		"origin":          {"https://new.express.adobe.com"},
+		"referer":         {"https://new.express.adobe.com/"},
 		"user-agent":      {sess.fp.userAgent},
 		http.HeaderOrderKey: {
 			"accept",

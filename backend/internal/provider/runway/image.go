@@ -15,7 +15,7 @@ import (
 // GenerateImage runs a Runway gemini image text/image-to-image pipeline:
 // upload each reference image (DATASET + DATASET_PREVIEW → dataset) to obtain
 // its {assetId, url}, create a gemini image task and poll it to completion,
-// then download the rendered PNG. modelID selects the variant: "nano-banana-2"
+// then download the rendered PNG. modelID selects the variant: "runway-nano-banana-2"
 // → gemini_3_1_flash_image / gemini-3.1-flash-image-preview (with aspect_ratio),
 // anything else → workflow_gemini_image / gemini-3-pro-image-preview. imageSize
 // is the "1K"/"2K"/"4K" tier. teamID is the workspace id; if empty it's derived
@@ -147,7 +147,7 @@ func (c *Client) createImageTask(ctx context.Context, client tlsclient.HttpClien
 		"exploreMode":    false,
 		"creationSource": "tool-mode",
 	}
-	if modelID == "nano-banana-2" {
+	if modelID == "runway-nano-banana-2" {
 		taskType = "gemini_3_1_flash_image"
 		opts["name"] = "Nano Banana 2 - " + prompt
 		opts["model"] = "gemini-3.1-flash-image-preview"

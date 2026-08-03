@@ -7,6 +7,7 @@
 /backend/.env.*.local
 /backend/data/
 /backend/bin/
+/backend/cmd/test*/
 
 # ======================================================================
 # Private — not shipped to users (internal deploy scripts + secrets).

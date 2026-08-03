@@ -2,8 +2,8 @@ package adobe
 
 import (
 	"encoding/json"
+	"math/rand"
 	"strings"
-	"time"
 )
 
 type modelSpec struct {
@@ -52,8 +52,12 @@ func ResolveModelSpec(modelID string) modelSpec {
 		return modelSpec{UpstreamModelID: "gpt-image", UpstreamModelVersion: "2"}
 	case "flux-kontext-max":
 		return modelSpec{UpstreamModelID: "flux", UpstreamModelVersion: "fluxKontextMax"}
-	default:
+	case "nano-banana-2":
 		return modelSpec{UpstreamModelID: "gemini-flash", UpstreamModelVersion: "nano-banana-3"}
+	case "nano-banana-pro":
+		return modelSpec{UpstreamModelID: "gemini-flash", UpstreamModelVersion: "nano-banana-2"}
+	default:
+		return modelSpec{UpstreamModelID: "gemini-flash", UpstreamModelVersion: "gemini-3-pro-image-preview"}
 	}
 }
 
@@ -64,7 +68,7 @@ func ResolveModelSpec(modelID string) modelSpec {
 func buildImage5Payload(prompt, aspectRatio, resolution string, blobIDs []string) map[string]any {
 	p := map[string]any{
 		"n":                    1,
-		"seeds":                []int{int(time.Now().Unix()) % 999999},
+		"seeds":                []int{rand.Intn(999999)},
 		"output":               map[string]any{"storeInputs": true},
 		"prompt":               prompt,
 		"referenceBlobs":       []any{},
@@ -112,17 +116,20 @@ func BuildImagePayloadCandidates(modelID, prompt, aspectRatio, outputResolution 
 
 func buildGPTImagePayloads(spec modelSpec, prompt, ratio, resolution string, blobIDs []string) []map[string]any {
 	size := getSize(gptImageSize, resolution, ratio, "1:1")
+	// Mirrors the captured working gpt-image request shape: modelSpecificPayload.size,
+	// generationSettings.detailLevel 3, and NO top-level size / outputResolution
+	// (sending those got 403). Keeps the chosen size via modelSpecificPayload.size
+	// ("WxH") rather than "auto".
 	base := map[string]any{
 		"modelId":              spec.UpstreamModelID,
 		"modelVersion":         spec.UpstreamModelVersion,
 		"n":                    1,
 		"prompt":               prompt,
-		"seeds":                []int{int(time.Now().Unix()) % 999999},
+		"seeds":                []int{rand.Intn(999999)},
 		"output":               map[string]any{"storeInputs": true},
 		"referenceBlobs":       []any{},
-		"size":                 map[string]any{"width": size[0], "height": size[1]},
 		"generationMetadata":   map[string]any{"module": "text2image", "submodule": "ff-image-generate"},
-		"modelSpecificPayload": map[string]any{},
+		"modelSpecificPayload": map[string]any{"size": sizeString(size)},
 		"generationSettings":   map[string]any{"detailLevel": 3},
 	}
 	if len(blobIDs) == 0 {
@@ -144,7 +151,7 @@ func buildFluxPayloads(spec modelSpec, prompt, ratio string, blobIDs []string) [
 		"n":              1,
 		"prompt":         prompt,
 		"size":           map[string]any{"width": size[0], "height": size[1]},
-		"seeds":          []int{int(time.Now().Unix()) % 999999},
+		"seeds":          []int{rand.Intn(999999)},
 		"output":         map[string]any{"storeInputs": true},
 		"referenceBlobs": []any{},
 		"modelSpecificPayload": map[string]any{
@@ -175,7 +182,7 @@ func buildDefaultPayloads(spec modelSpec, prompt, ratio, resolution string, blob
 		"n":            1,
 		"prompt":       prompt,
 		"size":         map[string]any{"width": size[0], "height": size[1]},
-		"seeds":        []int{int(time.Now().Unix()) % 999999},
+		"seeds":        []int{rand.Intn(999999)},
 		"groundSearch": false,
 		"output":       map[string]any{"storeInputs": true},
 		"generationMetadata": map[string]any{
@@ -206,6 +213,10 @@ func getSize(table map[string]map[string][2]int, resolution, ratio, fallbackRati
 		size = levelTable[fallbackRatio]
 	}
 	return size
+}
+
+func sizeString(size [2]int) string {
+	return itoa(size[0]) + "x" + itoa(size[1])
 }
 
 func blobRefs(ids []string, usage string) []any {
@@ -241,7 +252,7 @@ func cloneMap(in map[string]any) map[string]any {
 }
 
 func BuildVideoPayload(engine, prompt, aspectRatio string, durationSeconds int, resolution, referenceMode, upstreamModel string, blobIDs []string) map[string]any {
-	seedVal := int(time.Now().Unix()) % 999999
+	seedVal := rand.Intn(999999)
 	engine = defaultString(engine, "sora2")
 	resolution = defaultString(resolution, "720p")
 	aspectRatio = defaultString(aspectRatio, "16:9")
@@ -288,9 +299,6 @@ func BuildVideoPayload(engine, prompt, aspectRatio string, durationSeconds int, 
 		if engine == "veo31-standard" {
 			modelVersion = "3.1-generate"
 		}
-		// Shape mirrors a captured working firefly.adobe.com video request: flat
-		// top-level duration / negativePrompt / generateAudio, submodule set, and
-		// NO `n` / NO modelSpecificPayload (sending those got 403).
 		payload := map[string]any{
 			"modelId":        "veo",
 			"modelVersion":   modelVersion,
@@ -299,7 +307,7 @@ func BuildVideoPayload(engine, prompt, aspectRatio string, durationSeconds int, 
 			"prompt":         prompt,
 			"negativePrompt": "",
 			"duration":       durationSeconds,
-			"generateAudio":  false,
+			"generateAudio":  true,
 			"generationMetadata": map[string]any{
 				"module":    "text2video",
 				"submodule": "ff-video-generate",
@@ -309,9 +317,49 @@ func BuildVideoPayload(engine, prompt, aspectRatio string, durationSeconds int, 
 		}
 		if len(blobIDs) > 0 {
 			payload["generationMetadata"] = map[string]any{"module": "image2video", "submodule": "ff-video-generate"}
-			refs := make([]any, 0, min(len(blobIDs), 2))
-			for idx, id := range blobIDs[:min(len(blobIDs), 2)] {
-				refs = append(refs, map[string]any{"id": id, "usage": "general", "promptReference": idx + 1})
+			refs := make([]any, 0, min(len(blobIDs), 3))
+			if referenceMode == "frame" {
+				for idx, id := range blobIDs[:min(len(blobIDs), 3)] {
+					refs = append(refs, map[string]any{"id": id, "usage": "frame", "order": idx + 1})
+				}
+			} else {
+				for _, id := range blobIDs[:min(len(blobIDs), 3)] {
+					refs = append(refs, map[string]any{"id": id, "usage": "asset"})
+				}
+			}
+			payload["referenceBlobs"] = refs
+		}
+		return payload
+	case "seedance-fast", "seedance-2.0":
+		modelVersion := "seedance_2.0"
+		if engine == "seedance-fast" {
+			modelVersion = "seedance_2.0_fast"
+		}
+		payload := map[string]any{
+			"modelId":              "seedance",
+			"modelVersion":         modelVersion,
+			"size":                 videoSize(aspectRatio, resolution),
+			"seeds":                []int{seedVal},
+			"prompt":               prompt,
+			"negativePrompt":       "",
+			"duration":             durationSeconds,
+			"generateAudio":        true,
+			"generationSettings":   map[string]any{"aspectRatio": aspectRatio},
+			"generationMetadata":   map[string]any{"module": "text2video", "submodule": "ff-video-generate"},
+			"output":               map[string]any{"storeInputs": true},
+			"referenceBlobs":       []any{},
+		}
+		if len(blobIDs) > 0 {
+			payload["generationMetadata"] = map[string]any{"module": "image2video", "submodule": "ff-video-generate"}
+			refs := make([]any, 0, min(len(blobIDs), 9))
+			if referenceMode == "frame" {
+				for idx, id := range blobIDs[:min(len(blobIDs), 9)] {
+					refs = append(refs, map[string]any{"id": id, "usage": "frame", "order": idx + 1})
+				}
+			} else {
+				for _, id := range blobIDs[:min(len(blobIDs), 9)] {
+					refs = append(refs, map[string]any{"id": id, "usage": "asset"})
+				}
 			}
 			payload["referenceBlobs"] = refs
 		}

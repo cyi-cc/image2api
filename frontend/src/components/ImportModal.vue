@@ -112,6 +112,9 @@ async function doSmartImport() {
           <strong class="text-slate-700">多个 JWT</strong>(换行分隔)。
           全粘进来即可，无需任何前缀。
         </p>
+        <p class="text-xs text-rose-500 mb-3 leading-relaxed bg-rose-50 rounded px-3 py-2 border border-rose-200">
+          📢 需要购买 Adobe 号请联系 QQ：432539
+        </p>
         <textarea v-model="input" rows="10"
                   class="field font-mono text-xs resize-none"
                   placeholder="直接粘 Cookie 字符串 / JWT / JSON，自动识别"></textarea>

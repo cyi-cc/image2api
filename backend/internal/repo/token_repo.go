@@ -241,8 +241,8 @@ const leonardoDailyTokens = 150
 func (r *TokenRepository) RecoverQuota(ctx context.Context) ([]model.TokenAccount, error) {
 	// Also pick up accounts that are only single-kind limited (image_limited /
 	// video_limited) — those keep status "active" and would otherwise never have
-	// their per-kind flag cleared. Adobe resets both kinds at once, so the shared
-	// reset time gates recovery for all of them.
+	// their per-kind flag cleared. This is legacy support; Adobe no longer sets
+	// per-kind limits.
 	var items []model.TokenAccount
 	if err := r.db.WithContext(ctx).
 		Where("status = ? OR image_limited = ? OR video_limited = ?", "quota", true, true).
@@ -269,8 +269,11 @@ func (r *TokenRepository) RecoverQuota(ctx context.Context) ([]model.TokenAccoun
 		patch := map[string]any{
 			"fails":            0,
 			"quota_recover_at": nil,
-			"image_limited":    false,
-			"video_limited":    false,
+		}
+		// For Adobe, also clear any legacy per-kind limit flags.
+		if t.Pool == "adobe" {
+			patch["image_limited"] = false
+			patch["video_limited"] = false
 		}
 		// Only flip status back to active if it was sunk to "quota" (both kinds
 		// limited); a single-kind limit left status untouched.

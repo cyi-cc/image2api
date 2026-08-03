@@ -716,6 +716,9 @@ func (s *TokenService) checkPendingAdobe(tokenID, cookie string) {
 		quotaMeta["cached_quota_at"] = int(time.Now().Unix())
 		if rem, ok := cb["remaining"].(int); ok {
 			quotaMeta["cached_quota_remaining"] = rem
+			if rem <= 4000 {
+				quotaMeta["is_sub_account"] = true
+			}
 		}
 	}
 	if prof, e := s.adobe.FetchAccountProfile(ctx, result.AccessToken); e == nil {
@@ -1273,6 +1276,7 @@ func (s *TokenService) Quota(ctx context.Context, pool, id string) (map[string]a
 		meta["cached_quota_at"] = int(time.Now().Unix())
 		if remaining, ok := data["remaining"].(int); ok {
 			meta["cached_quota_remaining"] = remaining
+			meta["is_sub_account"] = remaining <= 4000
 		}
 		if used, ok := data["used"].(int); ok {
 			meta["cached_quota_used"] = used
@@ -1643,6 +1647,7 @@ func accountRow(item model.TokenAccount, inFlight int64) map[string]any {
 	remaining, hasRemaining := jsonMapInt(item.Meta, "cached_quota_remaining")
 	quotaAt, _ := jsonMapInt(item.Meta, "cached_quota_at")
 	pending, _ := jsonMapBool(item.Meta, "pending_check")
+	subAccount, _ := jsonMapBool(item.Meta, "is_sub_account")
 	// OpenAI email lives in the token's JWT (nested profile claim). Decode it at
 	// render time like the Python reference (_account_row) so accounts imported
 	// before the email was persisted still show a name; fall back to the cached
@@ -1680,6 +1685,7 @@ func accountRow(item model.TokenAccount, inFlight int64) map[string]any {
 		"image_limited":     item.ImageLimited,
 		"video_limited":     item.VideoLimited,
 		"pending":           pending,
+		"sub_account":       subAccount,
 		"quota_supported":   hasQuota,
 		"needs_reset_fetch": typeLabel == "adobe" && item.Status == "active" && strings.TrimSpace(item.CachedQuotaResetAfter) == "",
 		"weight":            item.Weight,

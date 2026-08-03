@@ -726,7 +726,7 @@ onUnmounted(() => {
       <!-- reference images -->
       <div v-if="maxRefs > 0">
         <label class="block text-xs font-medium text-slate-500 mb-1.5">
-          参考图
+          {{ refMode === 'frame' && mode === 'video' ? '首尾帧' : '参考图' }}
           <span class="text-slate-400 font-normal">
             (最多 {{ maxRefs }} 张{{ refMode === 'frame' && mode === 'video' ? (maxRefs >= 2 ? ' · 首帧/末帧' : ' · 首帧') : '' }} · 单张 ≤20MB)
           </span>
