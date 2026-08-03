@@ -98,9 +98,12 @@ const resolutions = computed(() => {
   return mode.value === 'video' ? ['720p'] : ['1K']
 })
 const durations = computed(() => {
+  const declared = model.value?.durations || []
+  if (model.value?.duration_prices?.per_second != null && declared.length) return declared
   // duration_prices arrives as a JSON object whose keys Go sorts alphabetically
   // ("10s" before "5s"). Re-sort by the numeric seconds so the shortest is first.
   const keys = Object.keys(model.value?.duration_prices || {})
+    .filter((key) => key !== 'per_second')
     .sort((a, b) => parseFloat(a) - parseFloat(b))
   if (keys.length) return keys
   return familyPreset.value?.durations || ['5s']
@@ -150,7 +153,10 @@ const price = computed(() => {
   const m = model.value
   if (mode.value === 'video') {
     const rp = tierPrice(m.prices, m.prices_agent, resolution.value)
-    const dp = tierPrice(m.duration_prices, m.duration_prices_agent, duration.value)
+    const perSecond = tierPrice(m.duration_prices, m.duration_prices_agent, 'per_second')
+    const dp = perSecond == null
+      ? tierPrice(m.duration_prices, m.duration_prices_agent, duration.value)
+      : perSecond * (parseFloat(duration.value) || 0)
     if (rp == null || dp == null) return null
     return rp + dp
   }

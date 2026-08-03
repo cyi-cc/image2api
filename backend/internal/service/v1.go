@@ -765,6 +765,8 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 		videoBytes, videoURL, execErr = s.generateRunwayVideo(genCtx, eventID, modelItem, in, aspectRatio, parseDurationSeconds(duration), !urlOnly)
 	case "grok":
 		videoBytes, videoURL, execErr = s.generateGrokVideo(genCtx, eventID, modelItem, in, aspectRatio, resolution, parseDurationSeconds(duration), !urlOnly)
+	case "leonardo":
+		videoBytes, videoURL, execErr = s.generateLeonardoVideo(genCtx, eventID, modelItem, in, aspectRatio, resolution, parseDurationSeconds(duration), !urlOnly)
 	case "custom":
 		videoBytes, videoURL, execErr = s.generateCustomVideo(genCtx, eventID, modelItem, in, aspectRatio, resolution, parseDurationSeconds(duration), !urlOnly)
 	default:
@@ -778,11 +780,11 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 		switch {
 		case errors.Is(execErr, ErrNoProviderAccount):
 			return nil, ErrNoProviderAccount
-		case errors.Is(execErr, adobe.ErrAuth), errors.Is(execErr, runway.ErrAuth), errors.Is(execErr, grok.ErrAuth), errors.Is(execErr, custom.ErrAuth):
+		case errors.Is(execErr, adobe.ErrAuth), errors.Is(execErr, runway.ErrAuth), errors.Is(execErr, grok.ErrAuth), errors.Is(execErr, leonardo.ErrAuth), errors.Is(execErr, custom.ErrAuth):
 			return nil, ErrProviderAuth
-		case errors.Is(execErr, adobe.ErrQuotaExhausted), errors.Is(execErr, runway.ErrQuotaExhausted), errors.Is(execErr, grok.ErrQuotaExhausted), errors.Is(execErr, custom.ErrQuotaExhausted):
+		case errors.Is(execErr, adobe.ErrQuotaExhausted), errors.Is(execErr, runway.ErrQuotaExhausted), errors.Is(execErr, grok.ErrQuotaExhausted), errors.Is(execErr, leonardo.ErrQuotaExhausted), errors.Is(execErr, custom.ErrQuotaExhausted):
 			return nil, ErrProviderQuota
-		case errors.Is(execErr, adobe.ErrTemporaryUpstream), errors.Is(execErr, runway.ErrTemporaryUpstream), errors.Is(execErr, grok.ErrTemporaryUpstream), errors.Is(execErr, custom.ErrTemporaryUpstream):
+		case errors.Is(execErr, adobe.ErrTemporaryUpstream), errors.Is(execErr, runway.ErrTemporaryUpstream), errors.Is(execErr, grok.ErrTemporaryUpstream), errors.Is(execErr, leonardo.ErrTemporaryUpstream), errors.Is(execErr, custom.ErrTemporaryUpstream):
 			return nil, ErrProviderTemporary
 		default:
 			return nil, fmt.Errorf("%w: %v", ErrProviderExecution, execErr)
@@ -915,6 +917,8 @@ func (s *V1Service) runVideoJob(ctx context.Context, principal *APIPrincipal, in
 		_, videoURL, execErr = s.generateRunwayVideo(genCtx, eventID, modelItem, in, aspectRatio, parseDurationSeconds(duration), false)
 	case "grok":
 		_, videoURL, execErr = s.generateGrokVideo(genCtx, eventID, modelItem, in, aspectRatio, resolution, parseDurationSeconds(duration), false)
+	case "leonardo":
+		_, videoURL, execErr = s.generateLeonardoVideo(genCtx, eventID, modelItem, in, aspectRatio, resolution, parseDurationSeconds(duration), false)
 	case "custom":
 		_, videoURL, execErr = s.generateCustomVideo(genCtx, eventID, modelItem, in, aspectRatio, resolution, parseDurationSeconds(duration), false)
 	default:
@@ -2552,6 +2556,66 @@ func (s *V1Service) generateLeonardoImage(ctx context.Context, eventID string, m
 		return errors.Is(e, leonardo.ErrAuth), errors.Is(e, leonardo.ErrQuotaExhausted), errors.Is(e, leonardo.ErrTemporaryUpstream), false
 	}, nil, true)
 	return data, imageURL, err
+}
+
+func (s *V1Service) generateLeonardoVideo(ctx context.Context, eventID string, modelItem *model.ModelConfig, in V1VideoRequest, aspectRatio, resolution string, durationSeconds int, downloadResult bool) ([]byte, string, error) {
+	if s.leonardo == nil {
+		return nil, "", errors.New("leonardo client not configured")
+	}
+	if s.settings != nil {
+		if proxy, err := s.settings.GetValue(ctx, "proxy.url"); err == nil {
+			s.leonardo.SetProxy(proxy)
+		}
+	}
+
+	items, err := s.tokens.ListByPool(ctx, "leonardo")
+	if err != nil {
+		return nil, "", err
+	}
+	var active []model.TokenAccount
+	for _, item := range items {
+		if item.Status != "active" || item.Dead || strings.TrimSpace(item.Value) == "" {
+			continue
+		}
+		// Video costs vary by Seedance tier, duration and resolution. Do not use
+		// the image-only 30-token floor here; a known zero balance is enough to
+		// skip, while Leonardo remains authoritative for the actual cost.
+		if rem, ok := jsonMapInt(item.Meta, "cached_quota_remaining"); ok && rem <= 0 {
+			continue
+		}
+		active = append(active, item)
+	}
+	active = pinTestAccount(items, active, in.AccountID)
+	if len(active) == 0 {
+		return nil, "", ErrNoProviderAccount
+	}
+	s.rotateRoundRobin("leonardo", active)
+
+	refLimit := modelItem.MaxReferenceImages
+	if refLimit <= 0 {
+		refLimit = 2
+	}
+	refs, err := decodeReferenceImages(in.ReferenceImages, refLimit)
+	if err != nil {
+		return nil, "", err
+	}
+	referenceMode := defaultString(strings.TrimSpace(modelItem.ReferenceMode), "frame")
+
+	var videoURL string
+	data, err := s.runPoolWithFailover(ctx, eventID, "leonardo", active, "video", func(token model.TokenAccount) ([]byte, error) {
+		bytes, meta, genErr := s.leonardo.GenerateVideo(ctx, token.Value, modelItem.ID, in.Prompt, aspectRatio, resolution, durationSeconds, referenceMode, refs, downloadResult)
+		if genErr != nil {
+			return nil, genErr
+		}
+		videoURL = strings.TrimSpace(stringValue(meta["video_url"]))
+		// The real cost depends on the selected video options, so reconcile the
+		// upstream balance after success instead of guessing and pre-deducting.
+		s.reconcileLeonardoCredits(ctx, token.ID, token.Value)
+		return bytes, nil
+	}, func(e error) (bool, bool, bool, bool) {
+		return errors.Is(e, leonardo.ErrAuth), errors.Is(e, leonardo.ErrQuotaExhausted), errors.Is(e, leonardo.ErrTemporaryUpstream), false
+	}, nil, true)
+	return data, videoURL, err
 }
 
 // reconcileLeonardoCredits re-fetches an account's real token balance after a

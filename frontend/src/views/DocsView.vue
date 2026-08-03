@@ -30,7 +30,17 @@ function priceOf(m) {
   if (m.type === 'video') {
     // Video charge = resolution price + duration price; show the combined range.
     const rv = Object.values(m.prices || {}).filter((v) => v != null).map(Number)
-    const dv = Object.values(m.duration_prices || {}).filter((v) => v != null).map(Number)
+    const durationPrices = m.duration_prices || {}
+    const dv = Object.entries(durationPrices)
+      .filter(([key, value]) => key !== 'per_second' && value != null)
+      .map(([, value]) => Number(value))
+    if (durationPrices.per_second != null) {
+      const seconds = (m.durations || []).map((d) => parseFloat(d)).filter(Number.isFinite)
+      if (seconds.length) {
+        dv.push(Number(durationPrices.per_second) * Math.min(...seconds))
+        dv.push(Number(durationPrices.per_second) * Math.max(...seconds))
+      }
+    }
     if (!rv.length || !dv.length) return '—'
     const lo = Math.min(...rv) + Math.min(...dv)
     const hi = Math.max(...rv) + Math.max(...dv)

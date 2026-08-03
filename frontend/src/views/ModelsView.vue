@@ -204,12 +204,21 @@ onMounted(loadModels)
                   <span class="text-amber-300/40 ml-1.5">代理</span>
                   <span class="text-amber-300 tabular-nums">{{ points(m.prices_agent?.[r] ?? m.prices?.[r]) }}</span>
                 </span>
-                <span v-for="d in (m.durations || [])" :key="'d'+d" class="price-chip">
-                  <span class="text-white/85">{{ d }}</span>
+                <template v-for="d in (m.durations || [])" :key="'d'+d">
+                  <span v-if="m.duration_prices?.[d] != null" class="price-chip">
+                    <span class="text-white/85">{{ d }}</span>
+                    <span class="text-white/30 mx-1">普通</span>
+                    <span class="text-sky-300 tabular-nums">+{{ points(m.duration_prices[d]) }}</span>
+                    <span class="text-amber-300/40 ml-1.5">代理</span>
+                    <span class="text-amber-300 tabular-nums">+{{ points(m.duration_prices_agent?.[d] ?? m.duration_prices[d]) }}</span>
+                  </span>
+                </template>
+                <span v-if="m.duration_prices?.per_second != null" class="price-chip">
+                  <span class="text-white/85">/s</span>
                   <span class="text-white/30 mx-1">普通</span>
-                  <span class="text-sky-300 tabular-nums">+{{ points(m.duration_prices?.[d]) }}</span>
+                  <span class="text-sky-300 tabular-nums">+{{ points(m.duration_prices.per_second) }}</span>
                   <span class="text-amber-300/40 ml-1.5">代理</span>
-                  <span class="text-amber-300 tabular-nums">+{{ points(m.duration_prices_agent?.[d] ?? m.duration_prices?.[d]) }}</span>
+                  <span class="text-amber-300 tabular-nums">+{{ points(m.duration_prices_agent?.per_second ?? m.duration_prices.per_second) }}</span>
                 </span>
                 <span v-if="!(m.resolutions || []).length && !(m.durations || []).length" class="text-white/30 text-xs">—</span>
               </div>

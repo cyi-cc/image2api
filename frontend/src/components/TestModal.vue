@@ -32,9 +32,12 @@ const resolutions = (props.model.resolutions && props.model.resolutions.length)
   : (isVideo ? ['720p'] : ['2K'])
 
 const durations = computed(() => {
+  const declared = props.model?.durations || []
+  if (props.model?.duration_prices?.per_second != null && declared.length) return declared
   // duration_prices keys come back alphabetically from Go ("10s" before "5s");
   // sort by numeric seconds so the shortest is first.
   const keys = Object.keys(props.model?.duration_prices || {})
+    .filter((key) => key !== 'per_second')
     .sort((a, b) => parseFloat(a) - parseFloat(b))
   if (keys.length) return keys
   if (familyPreset.value?.durations?.length) return familyPreset.value.durations

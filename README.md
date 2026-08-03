@@ -137,11 +137,11 @@
 
 | 供应商 | 模型(示例) | 类型 |
 |---|---|---|
-| **Adobe Firefly** | firefly-image-5 · firefly-gpt-image-2 · flux-kontext-max · nano-banana-2 · nano-banana-pro · firefly-video · firefly-ray · gemini-veo31 | 图像 / 视频 |
+| **Adobe Firefly** | firefly-image-5 · firefly-gpt-image-2 · nano-banana-2 · nano-banana-pro · firefly-video · firefly-ray · gemini-veo3.1 · seedance-fast · seedance-2.0 | 图像 / 视频 |
 | **OpenAI** | gpt-image-2 | 图像 |
 | **Runway** | runway-gen4-turbo · runway-nano-banana-2 (Nano Banana 2) · runway-nano-banana-pro (Nano Banana Pro) | 视频 / 图像 |
 | **Grok（grok.com）** | grok-video（imagine 文生 / 图生视频) | 视频 |
-| **Leonardo.ai** | seedream-4.5 | 图像 |
+| **Leonardo.ai** | seedream-4.5 · leonardo-seedance-fast · leonardo-seedance-2.0 · leonardo-seedance-mini | 图像 / 视频 |
 | **Krea.ai** | flux-klein-2 | 图像 |
 | **Imagine.art** | imagine-1.5 · imagine-1.5pro | 图像 |
 | **自定义上游** | 任意 OpenAI 兼容 v1 端点(按 id 路由) | 图像 / 视频 |

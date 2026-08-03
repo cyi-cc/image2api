@@ -43,7 +43,9 @@ let recoverSubmitTs = 0
 onUnmounted(() => clearTimeout(recoverTimer))
 
 function firstDuration(m) {
+  if (m?.duration_prices?.per_second != null && m?.durations?.length) return m.durations[0]
   const keys = Object.keys(m?.duration_prices || {})
+    .filter((key) => key !== 'per_second')
     .sort((a, b) => parseFloat(a) - parseFloat(b))
   return keys[0] || '5s'
 }
