@@ -1674,12 +1674,13 @@ func (s *V1Service) generateAdobeVideo(ctx context.Context, eventID string, mode
 	if err != nil {
 		return nil, "", err
 	}
+	allowSubAccountSeedance := s.allowAdobeSubAccountSeedance(ctx)
 	var active []model.TokenAccount
 	for _, item := range items {
 		if item.Status != "active" || item.Dead || strings.TrimSpace(item.Value) == "" {
 			continue
 		}
-		if isSeedanceModel(modelItem.ID) && isSubAccount(item.Meta) {
+		if isSeedanceModel(modelItem.ID) && isSubAccount(item.Meta) && !allowSubAccountSeedance {
 			continue
 		}
 		active = append(active, item)
@@ -3399,6 +3400,17 @@ func (s *V1Service) rotateRoundRobin(pool string, items []model.TokenAccount) {
 
 func isSeedanceModel(modelID string) bool {
 	return modelID == "seedance-fast" || modelID == "seedance-2.0"
+}
+
+// allowAdobeSubAccountSeedance is an explicit operator override. Adobe
+// sub-accounts often receive HTTP 408 for Seedance, so a missing/unreadable
+// setting always falls back to false and preserves the conservative filter.
+func (s *V1Service) allowAdobeSubAccountSeedance(ctx context.Context) bool {
+	if s.settings == nil {
+		return false
+	}
+	raw, err := s.settings.GetValue(ctx, "adobe.allow_sub_account_seedance")
+	return err == nil && parseBoolSetting(raw, false)
 }
 
 func isSubAccount(meta map[string]interface{}) bool {

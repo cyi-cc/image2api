@@ -194,6 +194,8 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 			settings.PUT("/logs", handlers.AppSettings.LogsPut)
 			settings.GET("/deai", handlers.AppSettings.DeAIGet)
 			settings.PUT("/deai", handlers.AppSettings.DeAIPut)
+			settings.GET("/adobe", handlers.AppSettings.AdobeGet)
+			settings.PUT("/adobe", handlers.AppSettings.AdobePut)
 			settings.GET("/media", handlers.AppSettings.MediaGet)
 			settings.PUT("/media", handlers.AppSettings.MediaPut)
 			settings.GET("/announcement", handlers.Announcement.AdminGet)

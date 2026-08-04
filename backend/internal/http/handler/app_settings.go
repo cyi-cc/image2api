@@ -279,6 +279,29 @@ func (h *AppSettingsHandler) DeAIPut(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"ok": true, "data": data})
 }
 
+func (h *AppSettingsHandler) AdobeGet(c *gin.Context) {
+	data, err := h.settings.Adobe(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to load Adobe settings"})
+		return
+	}
+	c.JSON(http.StatusOK, data)
+}
+
+func (h *AppSettingsHandler) AdobePut(c *gin.Context) {
+	var body service.AdobeSettings
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request body"})
+		return
+	}
+	data, err := h.settings.SaveAdobe(c.Request.Context(), body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true, "data": data})
+}
+
 func (h *AppSettingsHandler) LogsGet(c *gin.Context) {
 	data, err := h.settings.Logs(c.Request.Context())
 	if err != nil {

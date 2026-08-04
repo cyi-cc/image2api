@@ -28,6 +28,17 @@ const qGenerationVideos = `query GenerationVideos($where: generations_bool_exp =
   }
 }`
 
+// Keep the Seedance submit on the same cookie -> short-lived bearer -> GraphQL
+// flow as Seedream, but only select the field required to track a video job.
+// Seedream also asks for apiCreditCost; that resolver is image-oriented and can
+// return Leonardo's opaque "An error occurred." for video generations.
+const mGenerateVideo = `mutation Generate($request: CreateGenerationRequest!) {
+  generate(request: $request) {
+    generationId
+    __typename
+  }
+}`
+
 // GenerateVideo uses the same browser-cookie -> short-lived bearer flow as the
 // Leonardo image provider. Seedance is submitted through Leonardo's universal
 // Generate mutation, then polled until the generated MP4 becomes available.
@@ -52,6 +63,9 @@ func (c *Client) GenerateVideo(ctx context.Context, cookie, model, prompt, aspec
 		"height":           height,
 		"duration":         durationSeconds,
 		"motion_has_audio": true,
+	}
+	if model == "seedance-2.0" {
+		parameters["mode"] = seedanceResolutionMode(resolution)
 	}
 
 	if len(refImages) > 0 {
@@ -78,7 +92,7 @@ func (c *Client) GenerateVideo(ctx context.Context, cookie, model, prompt, aspec
 
 	payload, _ := json.Marshal(map[string]any{
 		"operationName": "Generate",
-		"query":         mGenerate,
+		"query":         mGenerateVideo,
 		"variables": map[string]any{
 			"request": map[string]any{
 				"model": model,
@@ -99,9 +113,6 @@ func (c *Client) GenerateVideo(ctx context.Context, cookie, model, prompt, aspec
 	if status != 200 {
 		return nil, nil, fmt.Errorf("%w: generate video http %d: %s", ErrTemporaryUpstream, status, clip(body, 200))
 	}
-	if e := graphqlError(body); e != nil {
-		return nil, nil, e
-	}
 	var submitted struct {
 		Data struct {
 			Generate struct {
@@ -114,6 +125,9 @@ func (c *Client) GenerateVideo(ctx context.Context, cookie, model, prompt, aspec
 	}
 	genID := strings.TrimSpace(submitted.Data.Generate.GenerationID)
 	if genID == "" {
+		if e := graphqlError(body); e != nil {
+			return nil, nil, e
+		}
 		return nil, nil, fmt.Errorf("%w: no generationId: %s", ErrTemporaryUpstream, clip(body, 200))
 	}
 
@@ -161,6 +175,17 @@ func seedanceDimensions(aspectRatio, resolution string) (int, int) {
 		return short, short
 	default:
 		return long, short
+	}
+}
+
+func seedanceResolutionMode(resolution string) string {
+	switch strings.ToLower(strings.TrimSpace(resolution)) {
+	case "1080p":
+		return "RESOLUTION_1080"
+	case "480p":
+		return "RESOLUTION_480"
+	default:
+		return "RESOLUTION_720"
 	}
 }
 
