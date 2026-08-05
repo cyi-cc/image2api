@@ -459,19 +459,26 @@ func (s *TokenService) checkPendingLeonardo(tokenID, cookie string) {
 		return
 	}
 	s.applyProxy(ctx)
-	// Force the same keepalive used by maintenance so a Set-Cookie emitted during
-	// the initial validation is persisted, then reuse its cached bearer for quota.
-	fresh, refreshErr := leonardoRefreshAndPersist(ctx, s.leonardo, s.tokens, tokenID, cookie)
-	if refreshErr != nil {
-		if errors.Is(refreshErr, leonardo.ErrAuth) {
+	// A freshly copied browser cookie already contains the website's current
+	// get-session cache. Read it normally on import; forcing a second cache-bypass
+	// request immediately after the browser's own poll caused HTML 429 responses in
+	// Release-v1.3. Periodic keepalive and auth-retry still force renewal later.
+	data, err := s.leonardo.FetchCreditsBalance(ctx, cookie)
+	if errors.Is(err, leonardo.ErrAuth) {
+		// The cached bearer may have expired or been revoked between the browser copy
+		// and import. Only in that case force a fresh session and retry once; a failed
+		// forced exchange is what distinguishes a dead cookie from a stale bearer.
+		fresh, refreshErr := leonardoRefreshAndPersist(ctx, s.leonardo, s.tokens, tokenID, cookie)
+		if refreshErr == nil {
+			data, err = s.leonardo.FetchCreditsBalance(ctx, fresh)
+		} else if errors.Is(refreshErr, leonardo.ErrAuth) {
 			s.finishPending(ctx, "leonardo", tokenID, "disabled", true, nil)
 			return
+		} else {
+			s.finishPending(ctx, "leonardo", tokenID, "active", false, nil)
+			return
 		}
-		// network/proxy blip — benefit of the doubt, activate and retry in 15m.
-		s.finishPending(ctx, "leonardo", tokenID, "active", false, nil)
-		return
 	}
-	data, err := s.leonardo.FetchCreditsBalance(ctx, fresh)
 	if err != nil {
 		if errors.Is(err, leonardo.ErrAuth) {
 			s.finishPending(ctx, "leonardo", tokenID, "disabled", true, nil)
@@ -495,12 +502,27 @@ func (s *TokenService) checkPendingLeonardo(tokenID, cookie string) {
 		_, _ = s.tokens.Update(ctx, "leonardo", tokenID, seed)
 	}
 	quotaMeta := map[string]any{}
+	now := time.Now()
 	if rem, ok := data["remaining"].(int); ok {
 		quotaMeta["cached_quota_remaining"] = rem
-		quotaMeta["cached_quota_at"] = int(time.Now().Unix())
+		quotaMeta["cached_quota_at"] = int(now.Unix())
 	}
 	if uid := strings.TrimSpace(stringValue(data["user_id"])); uid != "" {
 		quotaMeta["user_id"] = uid
+	}
+	if unknown, _ := data["unknown"].(bool); unknown {
+		// GetSession turns transient auth-exchange failures into an unknown quota so
+		// imports remain usable. Preserve the error and retry throttle explicitly;
+		// otherwise the one-minute maintenance sweep would hammer get-session.
+		quotaMeta["session_refresh_attempted_at"] = int(now.Unix())
+		if reason := strings.TrimSpace(stringValue(data["error"])); reason != "" {
+			quotaMeta["session_refresh_error"] = reason
+		}
+	} else {
+		// A normal cached-session read succeeded. Start the first keepalive window
+		// from here so maintenance does not immediately force a second request.
+		quotaMeta["session_validated_at"] = int(now.Unix())
+		quotaMeta["session_refresh_next_at"] = int(leonardoNextRefreshAt(now).Unix())
 	}
 	s.finishPending(ctx, "leonardo", tokenID, "active", false, quotaMeta)
 }

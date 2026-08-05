@@ -6,7 +6,7 @@ services:
     environment:
       POSTGRES_DB: vivid_ai
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-musesapi-change-this-password}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-12345678}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -34,7 +34,7 @@ services:
       APP_ENV: production
       APP_TITLE: ${APP_TITLE:-MusesAPI}
       HTTP_ADDR: 0.0.0.0:2000
-      POSTGRES_DSN: host=postgres user=postgres password=${POSTGRES_PASSWORD:-musesapi-change-this-password} dbname=vivid_ai port=5432 sslmode=disable TimeZone=Asia/Shanghai
+      POSTGRES_DSN: host=postgres user=postgres password=${POSTGRES_PASSWORD:-12345678} dbname=vivid_ai port=5432 sslmode=disable TimeZone=Asia/Shanghai
       REDIS_ADDR: redis:6379
       REDIS_PASSWORD: ""
       REDIS_DB: "0"

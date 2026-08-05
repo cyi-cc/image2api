@@ -12,7 +12,9 @@ package leonardo
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,13 +28,16 @@ import (
 	http "github.com/bogdanfinn/fhttp"
 	tlsclient "github.com/bogdanfinn/tls-client"
 	"github.com/bogdanfinn/tls-client/profiles"
+	"golang.org/x/sync/singleflight"
 )
 
 const (
 	appBase       = "https://app.leonardo.ai"
 	graphqlURL    = "https://api.leonardo.ai/v1/graphql"
 	schemaVersion = "1.187.0"
-	userAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+	chromeVersion = "146"
+	userAgent     = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + chromeVersion + ".0.0.0 Safari/537.36"
+	secCHUA       = `"Not;A=Brand";v="8", "Chromium";v="146", "Google Chrome";v="146"`
 )
 
 var (
@@ -46,8 +51,12 @@ type Client struct {
 	// sessions caches the short-lived access token per cookie so we don't hit
 	// /api/auth/get-session on every call — Leonardo rate-limits that endpoint
 	// (429) hard, so re-using the ~1h JWT is essential.
-	mu       sync.Mutex
-	sessions map[string]*Session
+	mu             sync.Mutex
+	sessions       map[string]*Session
+	refreshFlights singleflight.Group
+	// fetchSessionHook is only used by package tests to exercise refresh
+	// coalescing without reaching Leonardo.
+	fetchSessionHook func(context.Context, string, bool) (*Session, []*http.Cookie, error)
 }
 
 func NewClient(proxy string) *Client {
@@ -64,7 +73,7 @@ func (c *Client) SetProxy(proxy string) {
 func IsLeonardoCookie(value string) bool {
 	for _, part := range strings.Split(value, ";") {
 		name, _, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if ok && (isSessionTokenCookie(name) || isSessionDataCookie(name)) {
+		if ok && isSessionTokenCookie(name) {
 			return true
 		}
 	}
@@ -93,15 +102,36 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 	// Re-use a cached, still-valid access token (keep a 60s safety margin) instead
 	// of hitting the heavily rate-limited get-session endpoint again.
 	c.mu.Lock()
-	if cs, ok := c.sessions[cookie]; ok && cs.ExpiresAt-60 > time.Now().Unix() {
+	cs, cached := c.sessions[cookie]
+	if cached && cs.ExpiresAt-60 > time.Now().Unix() {
 		c.mu.Unlock()
 		return cs, nil
 	}
 	c.mu.Unlock()
 
-	sess, _, err := c.fetchSession(ctx, cookie)
+	// A newly imported browser cookie normally carries Better Auth's current
+	// session_data cache. Read it exactly like the website on the first call; doing
+	// an immediate forced refresh after the browser has just polled get-session can
+	// trip Leonardo's Cloudflare 429. Once our cached bearer expires, explicitly
+	// bypass Better Auth's cookie cache and mint a new one.
+	var sess *Session
+	var err error
+	if cached {
+		sess, _, err = c.fetchFreshSession(ctx, cookie)
+	} else {
+		sess, _, err = c.fetchSession(ctx, cookie, false)
+	}
 	if err != nil {
 		return nil, err
+	}
+	if sess.ExpiresAt <= time.Now().Unix()+60 && !cached {
+		// A copied session_data cookie has no browser Max-Age metadata. If it contains
+		// an already-expired bearer (common after a process restart), retry once via
+		// the documented cache-bypass query instead of replaying it forever.
+		sess, _, err = c.fetchFreshSession(ctx, cookie)
+		if err != nil {
+			return nil, err
+		}
 	}
 	c.cacheSession(cookie, sess)
 	return sess, nil
@@ -118,7 +148,7 @@ func (c *Client) RefreshCookie(ctx context.Context, cookie string) (fresh string
 	if cookie == "" {
 		return "", false, ErrAuth
 	}
-	sess, setCookies, err := c.fetchSession(ctx, cookie)
+	sess, setCookies, err := c.fetchFreshSession(ctx, cookie)
 	if err != nil {
 		return "", false, err
 	}
@@ -128,6 +158,46 @@ func (c *Client) RefreshCookie(ctx context.Context, cookie string) (fresh string
 	}
 	c.cacheSession(fresh, sess)
 	return fresh, changed, nil
+}
+
+type freshSessionResult struct {
+	session    *Session
+	setCookies []*http.Cookie
+}
+
+// fetchFreshSession coalesces every forced get-session request by the durable
+// session_token. Scheduled keepalive, bearer-expiry renewal and GraphQL auth
+// retry can therefore overlap without multiplying Leonardo's rate-limited auth
+// calls. Each waiter keeps its own cancellation semantics, while the one shared
+// upstream call is allowed to finish for the other waiters.
+func (c *Client) fetchFreshSession(ctx context.Context, cookie string) (*Session, []*http.Cookie, error) {
+	key, ok := sessionAccountKey(cookie)
+	if !ok {
+		return nil, nil, ErrAuth
+	}
+	resultCh := c.refreshFlights.DoChan(key, func() (any, error) {
+		sharedCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 65*time.Second)
+		defer cancel()
+		sess, setCookies, err := c.fetchSession(sharedCtx, cookie, true)
+		if err != nil {
+			return nil, err
+		}
+		return freshSessionResult{session: sess, setCookies: setCookies}, nil
+	})
+
+	select {
+	case <-ctx.Done():
+		return nil, nil, ctx.Err()
+	case result := <-resultCh:
+		if result.Err != nil {
+			return nil, nil, result.Err
+		}
+		fresh, ok := result.Val.(freshSessionResult)
+		if !ok || fresh.session == nil {
+			return nil, nil, ErrTemporaryUpstream
+		}
+		return fresh.session, fresh.setCookies, nil
+	}
 }
 
 func (c *Client) cacheSession(cookie string, sess *Session) {
@@ -144,10 +214,14 @@ func (c *Client) cacheSession(cookie string, sess *Session) {
 	c.mu.Unlock()
 }
 
-// fetchSession performs the actual browser-cookie exchange and returns only the
-// Better Auth Set-Cookie values to the caller for safe merging. Tracking and
-// edge cookies are deliberately ignored by mergeAuthCookies.
-func (c *Client) fetchSession(ctx context.Context, cookie string) (*Session, []*http.Cookie, error) {
+// fetchSession performs the browser-cookie exchange. forceFresh uses Better
+// Auth's supported disableCookieCache query while retaining its complete auth
+// cookie set; deleting session_data client-side changed the request shape and
+// caused Leonardo's Cloudflare edge to return an HTML 429 after Release-v1.3.
+func (c *Client) fetchSession(ctx context.Context, cookie string, forceFresh bool) (*Session, []*http.Cookie, error) {
+	if c.fetchSessionHook != nil {
+		return c.fetchSessionHook(ctx, cookie, forceFresh)
+	}
 	// Honor the configured provider proxy for the auth exchange. Leonardo applies
 	// strict per-IP limits to get-session; the other direct calls are uploads,
 	// polling and downloads rather than this rate-limited auth endpoint.
@@ -155,29 +229,37 @@ func (c *Client) fetchSession(ctx context.Context, cookie string) (*Session, []*
 	if err != nil {
 		return nil, nil, err
 	}
-	req, err := http.NewRequest(http.MethodGet, appBase+"/api/auth/get-session", nil)
+	endpoint := sessionEndpoint(forceFresh)
+	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	req = req.WithContext(ctx)
 	req.Header = http.Header{
 		"accept":          {"*/*"},
+		"accept-encoding": {"gzip, deflate, br, zstd"},
 		"accept-language": {"en-US,en;q=0.9"},
-		// session_data is Better Auth's short-lived browser cache of this very
-		// response (including the ~1h access token). A copied Cookie header loses
-		// its Max-Age metadata, so replaying that cache forever returns an expired
-		// bearer after one hour. Send the durable session_token and force the
-		// server to resolve a current session instead.
-		"cookie":         {withoutSessionData(cookie)},
-		"origin":         {appBase},
-		"referer":        {appBase + "/"},
-		"user-agent":     {userAgent},
-		"sec-fetch-dest": {"empty"},
-		"sec-fetch-mode": {"cors"},
-		"sec-fetch-site": {"same-origin"},
+		// Cloudflare's bot-management cookies are bound to the real browser's
+		// TLS/HTTP fingerprint. Replaying a Chrome 150 __cf_bm value from this
+		// server while presenting a different client profile makes an otherwise
+		// valid Better Auth session look forged. get-session only needs these
+		// durable/cache cookies, so keep the credential and drop browser-bound
+		// analytics/edge state from this backend request.
+		"cookie":             {authSessionCookies(cookie)},
+		"dnt":                {"1"},
+		"priority":           {"u=1, i"},
+		"referer":            {appBase + "/"},
+		"sec-ch-ua":          {secCHUA},
+		"sec-ch-ua-mobile":   {"?0"},
+		"sec-ch-ua-platform": {`"macOS"`},
+		"sec-fetch-dest":     {"empty"},
+		"sec-fetch-mode":     {"cors"},
+		"sec-fetch-site":     {"same-origin"},
+		"user-agent":         {userAgent},
 		http.HeaderOrderKey: {
-			"accept", "accept-language", "cookie", "origin", "referer",
-			"user-agent", "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site",
+			"accept", "accept-encoding", "accept-language", "cookie", "dnt", "priority", "referer",
+			"sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
+			"sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site", "user-agent",
 		},
 	}
 	resp, err := client.Do(req)
@@ -231,6 +313,14 @@ func (c *Client) fetchSession(ctx context.Context, cookie string) (*Session, []*
 	return sess, resp.Cookies(), nil
 }
 
+func sessionEndpoint(forceFresh bool) string {
+	endpoint := appBase + "/api/auth/get-session"
+	if forceFresh {
+		return endpoint + "?disableCookieCache=true"
+	}
+	return endpoint
+}
+
 // accessTokenExpiry prefers the JWT's standard exp claim and only falls back to
 // Leonardo's accessTokenExpiry field. The website currently serializes that
 // field as JavaScript epoch milliseconds; treating it as Unix seconds makes a
@@ -270,19 +360,43 @@ func isSessionDataCookie(name string) bool {
 	return name == "better-auth.session_data" || strings.HasPrefix(name, "better-auth.session_data.")
 }
 
+// sessionAccountKey intentionally hashes only the durable account credential.
+// Browser-bound Cloudflare/analytics cookies and short-lived session_data chunks
+// may differ between otherwise identical copies of the same Leonardo account.
+func sessionAccountKey(cookie string) (string, bool) {
+	for _, pair := range parseCookiePairs(cookie) {
+		if isSessionTokenCookie(pair.name) && pair.value != "" {
+			sum := sha256.Sum256([]byte(pair.value))
+			return hex.EncodeToString(sum[:]), true
+		}
+	}
+	return "", false
+}
+
+func authSessionCookies(cookie string) string {
+	pairs := parseCookiePairs(cookie)
+	kept := make([]cookiePair, 0, 3)
+	for _, pair := range pairs {
+		if isSessionTokenCookie(pair.name) || isSessionDataCookie(pair.name) {
+			kept = append(kept, pair)
+		}
+	}
+	return formatCookiePairs(kept)
+}
+
 type cookiePair struct {
 	name  string
 	value string
 }
 
-// mergeAuthCookies applies a replacement Better Auth session_token to a stored
-// Cookie header and deliberately discards every session_data cache chunk. Those
-// chunks carry the short-lived get-session result; a copied raw Cookie header has
-// no Max-Age, so persisting them would replay an expired access token forever.
+// mergeAuthCookies applies replacement Better Auth cookies to the stored browser
+// Cookie header. session_data is retained for browser parity; forced renewal uses
+// disableCookieCache=true rather than deleting these fingerprint-relevant chunks.
 func mergeAuthCookies(cookie string, setCookies []*http.Cookie) (string, bool) {
 	pairs := parseCookiePairs(cookie)
 	updates := make([]cookiePair, 0, len(setCookies))
 	tokenTouched := false
+	dataTouched := false
 	for _, item := range setCookies {
 		if item == nil {
 			continue
@@ -290,9 +404,11 @@ func mergeAuthCookies(cookie string, setCookies []*http.Cookie) (string, bool) {
 		name := strings.TrimSpace(item.Name)
 		if isSessionTokenCookie(name) {
 			tokenTouched = true
+		} else if isSessionDataCookie(name) {
+			dataTouched = true
 		} else {
-			// session_data and unrelated tracking/edge cookies are not durable
-			// credential updates and must not be added to the stored header.
+			// Tracking/edge cookies are copied from the browser and are not part of
+			// Better Auth's credential rotation, so don't overwrite them here.
 			continue
 		}
 		deleted := item.MaxAge < 0 || (!item.Expires.IsZero() && item.Expires.Before(time.Now()))
@@ -305,7 +421,7 @@ func mergeAuthCookies(cookie string, setCookies []*http.Cookie) (string, bool) {
 		if tokenTouched && isSessionTokenCookie(pair.name) {
 			continue
 		}
-		if isSessionDataCookie(pair.name) {
+		if dataTouched && isSessionDataCookie(pair.name) {
 			continue
 		}
 		kept = append(kept, pair)
@@ -313,17 +429,6 @@ func mergeAuthCookies(cookie string, setCookies []*http.Cookie) (string, bool) {
 	kept = append(kept, updates...)
 	fresh := formatCookiePairs(kept)
 	return fresh, fresh != formatCookiePairs(pairs)
-}
-
-func withoutSessionData(cookie string) string {
-	pairs := parseCookiePairs(cookie)
-	kept := make([]cookiePair, 0, len(pairs))
-	for _, pair := range pairs {
-		if !isSessionDataCookie(pair.name) {
-			kept = append(kept, pair)
-		}
-	}
-	return formatCookiePairs(kept)
 }
 
 func parseCookiePairs(cookie string) []cookiePair {
@@ -488,12 +593,13 @@ func (c *Client) newTLSClient() (tlsclient.HttpClient, error) { return c.newTLSC
 func (c *Client) newDirectTLSClient() (tlsclient.HttpClient, error) { return c.newTLSClientP(false) }
 
 func (c *Client) newTLSClientP(useProxy bool) (tlsclient.HttpClient, error) {
-	// Match the fingerprint proven to work against Leonardo's Cloudflare edge:
-	// Chrome_120, fixed extension order. A randomized JA3 (Chrome_133 +
-	// WithRandomTLSExtensionOrder) gets flagged and 429'd at get-session.
+	// TLS profile, User-Agent, Client Hints and OS must describe one coherent
+	// browser. The copied cookies came from Chrome on macOS; Chrome_146 is the
+	// newest profile supported by the current tls-client release and is much
+	// closer to that browser than the old Chrome_120/133 Windows mixture.
 	options := []tlsclient.HttpClientOption{
 		tlsclient.WithTimeoutSeconds(60),
-		tlsclient.WithClientProfile(profiles.Chrome_120),
+		tlsclient.WithClientProfile(profiles.Chrome_146),
 	}
 	if useProxy && c.proxy != "" {
 		options = append(options, tlsclient.WithProxyUrl(c.proxy))

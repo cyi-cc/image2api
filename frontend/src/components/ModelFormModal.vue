@@ -42,7 +42,8 @@ const isVideo = computed(() => entry.value?.type === 'video')
 const resolutions = computed(() => sortResolutions(entry.value?.resolutions || []))
 const isPerSecond = computed(() => {
   const id = entry.value?.id || ''
-  return id.startsWith('seedance') || id.startsWith('leonardo-seedance')
+  return id.startsWith('seedance') || id.startsWith('leonardo-seedance') ||
+    id === 'leonardo-minimax-h3' || id === 'leonardo-happy-horse-1.1'
 })
 
 const durationTiers = computed(() => {

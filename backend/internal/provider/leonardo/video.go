@@ -28,36 +28,50 @@ const qGenerationVideos = `query GenerationVideos($where: generations_bool_exp =
   }
 }`
 
+type videoModelProfile struct {
+	UpstreamID       string
+	MinDuration      int
+	MaxDuration      int
+	MaxReferences    int
+	SupportsEndFrame bool
+	SupportsAudio    bool
+}
+
 // GenerateVideo uses the same browser-cookie -> short-lived bearer flow as the
-// Leonardo image provider. Seedance is submitted through Leonardo's universal
-// Generate mutation, then polled until the generated MP4 becomes available.
+// Leonardo image provider. Video models are submitted through Leonardo's
+// universal Generate mutation, then polled until the MP4 becomes available.
 func (c *Client) GenerateVideo(ctx context.Context, cookie, model, prompt, aspectRatio, resolution string, durationSeconds int, referenceMode string, refImages [][]byte, downloadResult bool) ([]byte, map[string]any, error) {
 	sess, err := c.GetSession(ctx, cookie)
 	if err != nil {
 		return nil, nil, err
 	}
-	model = normalizeSeedanceModel(model)
-	if model == "" {
-		return nil, nil, errors.New("leonardo: unsupported seedance model")
+	profile, ok := leonardoVideoProfile(model)
+	if !ok {
+		return nil, nil, errors.New("leonardo: unsupported video model")
 	}
-	if durationSeconds < 4 || durationSeconds > 15 {
-		return nil, nil, errors.New("leonardo: seedance duration must be 4-15 seconds")
+	if durationSeconds < profile.MinDuration || durationSeconds > profile.MaxDuration {
+		return nil, nil, fmt.Errorf("leonardo: %s duration must be %d-%d seconds", profile.UpstreamID, profile.MinDuration, profile.MaxDuration)
 	}
 
-	width, height := seedanceDimensions(aspectRatio, resolution)
+	width, height := videoDimensions(aspectRatio, resolution)
 	parameters := map[string]any{
-		"prompt":           prompt,
-		"quantity":         1,
-		"width":            width,
-		"height":           height,
-		"duration":         durationSeconds,
-		"motion_has_audio": true,
+		"prompt":   prompt,
+		"quantity": 1,
+		"width":    width,
+		"height":   height,
+		"duration": durationSeconds,
+	}
+	if profile.SupportsAudio {
+		parameters["motion_has_audio"] = true
 	}
 
 	if len(refImages) > 0 {
-		refLimit := 4
-		if strings.EqualFold(strings.TrimSpace(referenceMode), "frame") {
-			refLimit = 2
+		refLimit := profile.MaxReferences
+		if isFrameReferenceMode(referenceMode) {
+			refLimit = 1
+			if profile.SupportsEndFrame {
+				refLimit = 2
+			}
 		}
 		refs := refImages[:min(len(refImages), refLimit)]
 		uploadIDs := make([]string, 0, len(refs))
@@ -72,7 +86,7 @@ func (c *Client) GenerateVideo(ctx context.Context, cookie, model, prompt, aspec
 			uploadIDs = append(uploadIDs, id)
 		}
 		if len(uploadIDs) > 0 {
-			parameters["guidances"] = seedanceGuidances(uploadIDs, referenceMode)
+			parameters["guidances"] = videoGuidances(uploadIDs, referenceMode, profile)
 		}
 	}
 
@@ -81,7 +95,7 @@ func (c *Client) GenerateVideo(ctx context.Context, cookie, model, prompt, aspec
 		"query":         mGenerate,
 		"variables": map[string]any{
 			"request": map[string]any{
-				"model": model,
+				"model": profile.UpstreamID,
 				// Match Leonardo's existing cookie-backed image flow. Free/web
 				// accounts may require community-visible generations.
 				"public":     true,
@@ -136,47 +150,95 @@ func (c *Client) GenerateVideo(ctx context.Context, cookie, model, prompt, aspec
 	return data, info, nil
 }
 
-func normalizeSeedanceModel(model string) string {
+func leonardoVideoProfile(model string) (videoModelProfile, bool) {
 	switch strings.ToLower(strings.TrimSpace(model)) {
 	case "leonardo-seedance-2.0", "seedance-2.0":
-		return "seedance-2.0"
+		return videoModelProfile{UpstreamID: "seedance-2.0", MinDuration: 4, MaxDuration: 15, MaxReferences: 2, SupportsEndFrame: true, SupportsAudio: true}, true
 	case "leonardo-seedance-fast", "leonardo-seedance-2.0-fast", "seedance-fast", "seedance-2.0-fast":
-		return "seedance-2.0-fast"
+		return videoModelProfile{UpstreamID: "seedance-2.0-fast", MinDuration: 4, MaxDuration: 15, MaxReferences: 2, SupportsEndFrame: true, SupportsAudio: true}, true
 	case "leonardo-seedance-mini", "leonardo-seedance-2.0-mini", "seedance-mini", "seedance-2.0-mini":
-		return "seedance-2.0-mini"
+		return videoModelProfile{UpstreamID: "seedance-2.0-mini", MinDuration: 4, MaxDuration: 15, MaxReferences: 2, SupportsEndFrame: true, SupportsAudio: true}, true
+	case "leonardo-minimax-h3", "minimax-h3", "minimax_h3":
+		// MiniMax H3 was added to the Leonardo web app before its REST guide.
+		// Keep the observed/official model name in this one mapping so a later
+		// upstream naming change does not leak through the public API.
+		return videoModelProfile{UpstreamID: "minimax-h3", MinDuration: 5, MaxDuration: 15, MaxReferences: 2, SupportsEndFrame: true, SupportsAudio: true}, true
+	case "leonardo-happy-horse-1.1", "leonardo-happyhorse-1.1", "happy-horse-1.1", "happyhorse-1.1":
+		// Verified against Leonardo's Happy Horse 1.1 REST guide: 3-15s,
+		// maximum 9 image references, one start frame, native audio.
+		return videoModelProfile{UpstreamID: "happy-horse-1.1", MinDuration: 3, MaxDuration: 15, MaxReferences: 9, SupportsAudio: true}, true
 	default:
-		return ""
+		return videoModelProfile{}, false
 	}
 }
 
-func seedanceDimensions(aspectRatio, resolution string) (int, int) {
-	long, short := 1280, 720
-	if strings.EqualFold(strings.TrimSpace(resolution), "1080p") {
-		long, short = 1920, 1080
-	}
-	switch strings.TrimSpace(strings.ReplaceAll(aspectRatio, "x", ":")) {
-	case "9:16":
-		return short, long
-	case "1:1":
-		return short, short
-	default:
-		return long, short
+func videoDimensions(aspectRatio, resolution string) (int, int) {
+	ratio := strings.TrimSpace(strings.ReplaceAll(strings.ToLower(aspectRatio), "x", ":"))
+	switch strings.ToLower(strings.TrimSpace(resolution)) {
+	case "2k", "1440p":
+		// MiniMax H3's native 2K family, including its 21:9 option.
+		switch ratio {
+		case "21:9":
+			return 2560, 1080
+		case "9:16":
+			return 1440, 2560
+		case "4:3":
+			return 1920, 1440
+		case "3:4":
+			return 1440, 1920
+		case "1:1":
+			return 1920, 1920
+		default:
+			return 2560, 1440
+		}
+	case "1080p":
+		// Leonardo's documented Happy Horse 1.1 dimension table.
+		switch ratio {
+		case "9:16":
+			return 1080, 1920
+		case "4:3":
+			return 1662, 1248
+		case "3:4":
+			return 1248, 1662
+		case "1:1":
+			return 1440, 1440
+		default:
+			return 1920, 1080
+		}
+	default: // 720p
+		switch ratio {
+		case "9:16":
+			return 720, 1280
+		case "4:3":
+			return 1108, 832
+		case "3:4":
+			return 832, 1108
+		case "1:1":
+			return 960, 960
+		default:
+			return 1280, 720
+		}
 	}
 }
 
-func seedanceGuidances(uploadIDs []string, referenceMode string) map[string]any {
-	if strings.EqualFold(strings.TrimSpace(referenceMode), "frame") {
+func isFrameReferenceMode(referenceMode string) bool {
+	return strings.EqualFold(strings.TrimSpace(referenceMode), "frame")
+}
+
+func videoGuidances(uploadIDs []string, referenceMode string, profile videoModelProfile) map[string]any {
+	if isFrameReferenceMode(referenceMode) {
 		out := map[string]any{}
 		if len(uploadIDs) > 0 {
 			out["start_frame"] = []any{map[string]any{"image": map[string]any{"id": uploadIDs[0], "type": "UPLOADED"}}}
 		}
-		if len(uploadIDs) > 1 {
+		if profile.SupportsEndFrame && len(uploadIDs) > 1 {
 			out["end_frame"] = []any{map[string]any{"image": map[string]any{"id": uploadIDs[1], "type": "UPLOADED"}}}
 		}
 		return out
 	}
-	refs := make([]any, 0, min(len(uploadIDs), 4))
-	for idx, id := range uploadIDs[:min(len(uploadIDs), 4)] {
+	limit := min(len(uploadIDs), profile.MaxReferences)
+	refs := make([]any, 0, limit)
+	for idx, id := range uploadIDs[:limit] {
 		refs = append(refs, map[string]any{
 			"image":    map[string]any{"id": id, "type": "UPLOADED"},
 			"strength": "MID",

@@ -2579,7 +2579,7 @@ func (s *V1Service) generateLeonardoVideo(ctx context.Context, eventID string, m
 		if item.Status != "active" || item.Dead || strings.TrimSpace(item.Value) == "" {
 			continue
 		}
-		// Video costs vary by Seedance tier, duration and resolution. Do not use
+		// Video costs vary by Leonardo model, duration and resolution. Do not use
 		// the image-only 30-token floor here; a known zero balance is enough to
 		// skip, while Leonardo remains authoritative for the actual cost.
 		if rem, ok := jsonMapInt(item.Meta, "cached_quota_remaining"); ok && rem <= 0 {
