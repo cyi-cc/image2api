@@ -146,10 +146,9 @@ func (m *MaintenanceService) tick(ctx context.Context) {
 		}
 	}
 
-	// 1c. Proactively renew krea/imagine sessions ~10min before expiry so a
-	//     dormant account's rotating refresh_token never lapses (a dead token
-	//     can't be recovered and, for krea, blocks the daily free-credit meter
-	//     from being re-created). Only near-expiry accounts hit the network.
+	// 1c. Keep Leonardo's sliding Better Auth session alive every 40-50 minutes, and
+	//     proactively renew krea/imagine sessions ~10min before expiry. Per-account
+	//     due markers keep the one-minute sweep from repeatedly hitting upstream.
 	if m.tokenSvc != nil {
 		m.tokenSvc.RefreshExpiringTokens(ctx)
 		// 1d. Once-per-day krea /app activation for accounts not yet synced since the

@@ -2,23 +2,24 @@ package service
 
 import (
 	"context"
-	"sync"
-	"sync/atomic"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	rand "math/rand/v2"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"backend/internal/model"
 	"backend/internal/provider/adobe"
 	"backend/internal/provider/chatgpt"
+	"backend/internal/provider/grok"
 	"backend/internal/provider/imagine"
 	"backend/internal/provider/krea"
 	"backend/internal/provider/leonardo"
-	"backend/internal/provider/grok"
 	"backend/internal/provider/runway"
 	"backend/internal/repo"
 
@@ -101,12 +102,22 @@ func (s *TokenService) applyProxy(ctx context.Context) {
 	}
 }
 
-// RefreshExpiringTokens proactively renews krea/imagine sessions ~10min before
-// the access token expires (the providers' refreshLeadSeconds gate), so a dormant
-// account's rotating refresh_token never lapses. A dead token can't be recovered
-// and — for krea — also means the daily free-credit meter can't be re-created, so
-// keeping it perpetually fresh is what lets额度 auto-recover each day. Called by
-// the maintenance sweep; refresh only hits the network for near-expiry accounts.
+const (
+	// Leonardo does not expose the Better Auth server-side expiry in get-session.
+	// Some observed accounts stop authenticating after roughly one idle hour, so
+	// schedule each successful renewal around 45 minutes with ±5 minutes of jitter.
+	// Persisting next_at prevents restarts or one-minute sweeps from re-randomizing
+	// the deadline. Transient failures retry after 15 minutes.
+	leonardoKeepaliveBase   = 45 * time.Minute
+	leonardoKeepaliveJitter = 5 * time.Minute
+	leonardoKeepaliveRetry  = 15 * time.Minute
+)
+
+// RefreshExpiringTokens proactively renews Leonardo/Krea/Imagine sessions. For
+// Leonardo, get-session is a sliding-session keepalive and any replacement Better
+// Auth Set-Cookie values are persisted. Krea/Imagine use provider refresh tokens
+// near access-token expiry. Called by the one-minute maintenance sweep; per-account
+// due markers ensure the network is only hit when renewal/retry is due.
 func (s *TokenService) RefreshExpiringTokens(ctx context.Context) {
 	items, err := s.tokens.List(ctx)
 	if err != nil {
@@ -119,6 +130,13 @@ func (s *TokenService) RefreshExpiringTokens(ctx context.Context) {
 			continue
 		}
 		switch it.Pool {
+		case "leonardo":
+			if s.leonardo == nil || !leonardoRefreshDue(it.Meta, time.Now()) {
+				continue
+			}
+			if _, rerr := leonardoRefreshAndPersist(ctx, s.leonardo, s.tokens, it.ID, it.Value); rerr != nil && errors.Is(rerr, leonardo.ErrAuth) {
+				_, _ = s.tokens.Update(ctx, "leonardo", it.ID, map[string]any{"status": "disabled", "dead": true})
+			}
 		case "krea":
 			if s.krea == nil {
 				continue
@@ -135,6 +153,56 @@ func (s *TokenService) RefreshExpiringTokens(ctx context.Context) {
 			}
 		}
 	}
+}
+
+func leonardoRefreshDue(meta datatypes.JSONMap, now time.Time) bool {
+	nowUnix := now.Unix()
+	if attemptedAt, ok := jsonMapInt(meta, "session_refresh_attempted_at"); ok && attemptedAt > 0 && nowUnix-int64(attemptedAt) < int64(leonardoKeepaliveRetry.Seconds()) {
+		return false
+	}
+	if nextAt, ok := jsonMapInt(meta, "session_refresh_next_at"); ok && nextAt > 0 {
+		return nowUnix >= int64(nextAt)
+	}
+	// Accounts created before next_at was introduced renew once immediately; that
+	// successful call persists their first randomized deadline.
+	return true
+}
+
+func leonardoNextRefreshAt(now time.Time) time.Time {
+	jitterSeconds := int64(leonardoKeepaliveJitter / time.Second)
+	offset := rand.Int64N(jitterSeconds*2+1) - jitterSeconds
+	return now.Add(leonardoKeepaliveBase + time.Duration(offset)*time.Second)
+}
+
+// refreshLeonardoAndPersist performs a forced Better Auth keepalive and records
+// its schedule markers. Updating the raw cookie is best-effort atomic with the
+// success marker in one repository write, so a replacement session token is not
+// forgotten while the account is considered refreshed.
+func leonardoRefreshAndPersist(ctx context.Context, client *leonardo.Client, tokens *repo.TokenRepository, tokenID, cookie string) (string, error) {
+	now := time.Now()
+	fresh, changed, err := client.RefreshCookie(ctx, cookie)
+	item, getErr := tokens.Get(ctx, "leonardo", tokenID)
+	if getErr != nil {
+		return "", getErr
+	}
+	meta := cloneJSONMap(item.Meta)
+	meta["session_refresh_attempted_at"] = int(now.Unix())
+	patch := map[string]any{"meta": meta}
+	if err != nil {
+		meta["session_refresh_error"] = err.Error()
+		_, _ = tokens.Update(ctx, "leonardo", tokenID, patch)
+		return "", err
+	}
+	meta["session_refreshed_at"] = int(now.Unix())
+	meta["session_refresh_next_at"] = int(leonardoNextRefreshAt(now).Unix())
+	delete(meta, "session_refresh_error")
+	if changed {
+		patch["value"] = fresh
+	}
+	if _, updateErr := tokens.Update(ctx, "leonardo", tokenID, patch); updateErr != nil {
+		return "", updateErr
+	}
+	return fresh, nil
 }
 
 // ActivateKreaDue loads /app (Activate) for each krea account that hasn't been
@@ -330,8 +398,8 @@ func (s *TokenService) ImportRunwayToken(ctx context.Context, accessToken, token
 
 // ImportLeonardoCookie imports a Leonardo account. Unlike Adobe (which keeps a
 // refresh profile to re-mint a bearer), Leonardo's stored credential IS the
-// cookie — the bearer is derived on demand at generation time via get-session —
-// so there's no refresh profile. Lands a pending row, then the worker validates
+// Better Auth cookie. It is kept alive by the periodic get-session sweep rather
+// than a separate refresh profile. Lands a pending row, then the worker validates
 // the cookie + hydrates email/quota off-thread.
 func (s *TokenService) ImportLeonardoCookie(ctx context.Context, cookie, tokenID string) (*model.TokenAccount, error) {
 	cookie = cleanAdobeCookie(cookie) // same paste-cleanup (JSON / "Cookie:" prefix)
@@ -391,7 +459,19 @@ func (s *TokenService) checkPendingLeonardo(tokenID, cookie string) {
 		return
 	}
 	s.applyProxy(ctx)
-	data, err := s.leonardo.FetchCreditsBalance(ctx, cookie)
+	// Force the same keepalive used by maintenance so a Set-Cookie emitted during
+	// the initial validation is persisted, then reuse its cached bearer for quota.
+	fresh, refreshErr := leonardoRefreshAndPersist(ctx, s.leonardo, s.tokens, tokenID, cookie)
+	if refreshErr != nil {
+		if errors.Is(refreshErr, leonardo.ErrAuth) {
+			s.finishPending(ctx, "leonardo", tokenID, "disabled", true, nil)
+			return
+		}
+		// network/proxy blip — benefit of the doubt, activate and retry in 15m.
+		s.finishPending(ctx, "leonardo", tokenID, "active", false, nil)
+		return
+	}
+	data, err := s.leonardo.FetchCreditsBalance(ctx, fresh)
 	if err != nil {
 		if errors.Is(err, leonardo.ErrAuth) {
 			s.finishPending(ctx, "leonardo", tokenID, "disabled", true, nil)
@@ -892,7 +972,6 @@ func (s *TokenService) ImportGrokToken(ctx context.Context, ssoToken, tokenID st
 	go s.checkPendingGrok(tokenID, ssoToken)
 	return item, nil
 }
-
 
 func (s *TokenService) checkPendingGrok(tokenID, ssoToken string) {
 	defer func() {

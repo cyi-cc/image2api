@@ -2525,8 +2525,8 @@ func (s *V1Service) generateLeonardoImage(ctx context.Context, eventID string, m
 		return nil, "", err
 	}
 
-	// token.Value is the cookie; GenerateImage mints a fresh JWT each attempt, so an
-	// auth failure means the cookie itself is dead — no refresher (nil).
+	// token.Value is the durable cookie. A bearer 401 first forces get-session and
+	// retries once; only a failure of that exchange means the cookie itself is dead.
 	var imageURL string
 	data, err := s.runPoolWithFailover(ctx, eventID, "leonardo", active, "image", func(token model.TokenAccount) ([]byte, error) {
 		// Atomically pre-deduct the per-generation cost so concurrent picks of the
@@ -2554,7 +2554,9 @@ func (s *V1Service) generateLeonardoImage(ctx context.Context, eventID string, m
 		return data, nil
 	}, func(e error) (bool, bool, bool, bool) {
 		return errors.Is(e, leonardo.ErrAuth), errors.Is(e, leonardo.ErrQuotaExhausted), errors.Is(e, leonardo.ErrTemporaryUpstream), false
-	}, nil, true)
+	}, func(tokenID string) (model.TokenAccount, bool) {
+		return s.refreshLeonardoAccount(ctx, tokenID)
+	}, true)
 	return data, imageURL, err
 }
 
@@ -2614,8 +2616,32 @@ func (s *V1Service) generateLeonardoVideo(ctx context.Context, eventID string, m
 		return bytes, nil
 	}, func(e error) (bool, bool, bool, bool) {
 		return errors.Is(e, leonardo.ErrAuth), errors.Is(e, leonardo.ErrQuotaExhausted), errors.Is(e, leonardo.ErrTemporaryUpstream), false
-	}, nil, true)
+	}, func(tokenID string) (model.TokenAccount, bool) {
+		return s.refreshLeonardoAccount(ctx, tokenID)
+	}, true)
 	return data, videoURL, err
+}
+
+// refreshLeonardoAccount is the auth-retry bridge used by the generic pool
+// driver. It distinguishes an expired one-hour bearer from an expired browser
+// session by forcing get-session. Replacement Better Auth cookies are persisted
+// before the generation is attempted again.
+func (s *V1Service) refreshLeonardoAccount(ctx context.Context, tokenID string) (model.TokenAccount, bool) {
+	if s.leonardo == nil {
+		return model.TokenAccount{}, false
+	}
+	item, err := s.tokens.Get(ctx, "leonardo", tokenID)
+	if err != nil {
+		return model.TokenAccount{}, false
+	}
+	if _, err = leonardoRefreshAndPersist(ctx, s.leonardo, s.tokens, tokenID, item.Value); err != nil {
+		return model.TokenAccount{}, false
+	}
+	updated, err := s.tokens.Get(ctx, "leonardo", tokenID)
+	if err != nil {
+		return model.TokenAccount{}, false
+	}
+	return *updated, true
 }
 
 // reconcileLeonardoCredits re-fetches an account's real token balance after a
