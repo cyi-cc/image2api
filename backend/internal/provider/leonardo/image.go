@@ -315,42 +315,20 @@ func (c *Client) pollImage(ctx context.Context, accessToken, genID string) (stri
 func graphqlError(body []byte) error {
 	var env struct {
 		Errors []struct {
-			Message    string `json:"message"`
-			Path       []any  `json:"path"`
-			Extensions struct {
-				Code string `json:"code"`
-				Path string `json:"path"`
-			} `json:"extensions"`
+			Message string `json:"message"`
 		} `json:"errors"`
 	}
 	if err := json.Unmarshal(body, &env); err != nil || len(env.Errors) == 0 {
 		return nil
 	}
-	gqlErr := env.Errors[0]
-	msg := strings.TrimSpace(gqlErr.Message)
-	code := strings.TrimSpace(gqlErr.Extensions.Code)
-	path := strings.TrimSpace(gqlErr.Extensions.Path)
-	if path == "" && len(gqlErr.Path) > 0 {
-		parts := make([]string, 0, len(gqlErr.Path))
-		for _, part := range gqlErr.Path {
-			parts = append(parts, fmt.Sprint(part))
-		}
-		path = strings.Join(parts, ".")
-	}
-	detail := msg
-	if code != "" {
-		detail += " [code=" + code + "]"
-	}
-	if path != "" {
-		detail += " [path=" + path + "]"
-	}
-	low := strings.ToLower(msg + " " + code)
+	msg := strings.TrimSpace(env.Errors[0].Message)
+	low := strings.ToLower(msg)
 	switch {
 	case strings.Contains(low, "unauthor") || strings.Contains(low, "jwt") || strings.Contains(low, "token is") || strings.Contains(low, "forbidden"):
 		return ErrAuth
 	case strings.Contains(low, "token") || strings.Contains(low, "credit") || strings.Contains(low, "quota") || strings.Contains(low, "insufficient") || strings.Contains(low, "not enough"):
 		return ErrQuotaExhausted
 	default:
-		return fmt.Errorf("leonardo: %s", clip([]byte(detail), 300))
+		return fmt.Errorf("leonardo: %s", clip([]byte(msg), 200))
 	}
 }

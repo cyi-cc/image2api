@@ -139,26 +139,6 @@ async function saveDeai() {
   if (r.ok) { deaiSaved.value = true; setTimeout(() => (deaiSaved.value = false), 2000) }
 }
 
-// ---- Adobe provider behavior ----
-const adobeCfg = reactive({ allow_sub_account_seedance: false })
-const adobeBusy = ref(false); const adobeSaved = ref(false); const adobeErr = ref('')
-async function loadAdobe() {
-  const r = await api('/settings/adobe')
-  if (r.ok && r.data) Object.assign(adobeCfg, r.data)
-}
-async function saveAdobe() {
-  adobeBusy.value = true; adobeSaved.value = false; adobeErr.value = ''
-  const r = await api('/settings/adobe', jsonBody('PUT', {
-    allow_sub_account_seedance: !!adobeCfg.allow_sub_account_seedance,
-  }))
-  adobeBusy.value = false
-  if (r.ok) {
-    Object.assign(adobeCfg, r.data?.data || {})
-    adobeSaved.value = true
-    setTimeout(() => (adobeSaved.value = false), 2000)
-  } else adobeErr.value = r.data?.detail || '保存失败'
-}
-
 // ---- announcement (公告, markdown; re-pops for users who haven't seen edits) ----
 const ann = reactive({ content: '' })
 const annBusy = ref(false); const annSaved = ref(false)
@@ -352,7 +332,7 @@ async function saveCredits() {
   if (r.ok) { credSaved.value = true; setTimeout(() => (credSaved.value = false), 2000) }
 }
 
-onMounted(() => { loadSite(); loadReg(); loadSmtp(); loadCredits(); loadAnnouncement(); loadPay(); loadProxy(); loadR2(); loadLogs(); loadMedia(); loadDeai(); loadAdobe() })
+onMounted(() => { loadSite(); loadReg(); loadSmtp(); loadCredits(); loadAnnouncement(); loadPay(); loadProxy(); loadR2(); loadLogs(); loadMedia(); loadDeai() })
 </script>
 
 <template>
@@ -547,30 +527,6 @@ onMounted(() => { loadSite(); loadReg(); loadSmtp(); loadCredits(); loadAnnounce
         <button @click="testProxy" :disabled="proxyTestBusy || !proxy.proxy.trim()" class="btn-ghost">{{ proxyTestBusy ? '测试中…' : '代理测试' }}</button>
       </div>
       <p v-if="proxyTest.msg" class="text-xs mt-2" :class="proxyTest.ok ? 'text-emerald-300' : 'text-rose-300'">{{ proxyTest.msg }}</p>
-    </div>
-
-    <!-- Adobe provider behavior -->
-    <div class="card p-5">
-      <div class="flex items-center justify-between mb-4">
-        <h2 class="text-sm font-semibold">Adobe 视频</h2>
-        <span v-if="adobeSaved" class="text-xs text-emerald-300">已保存 ✓</span>
-      </div>
-      <div class="space-y-3">
-        <label class="row">
-          <span>
-            <span class="lbl">允许子号生成 Seedance 视频</span>
-            <span class="hint">关闭时，系统会过滤 Adobe 子号，不让其调用 seedance-fast 和 seedance-2.0。默认关闭。</span>
-          </span>
-          <input type="checkbox" v-model="adobeCfg.allow_sub_account_seedance" class="sw" />
-        </label>
-      </div>
-      <div v-if="adobeCfg.allow_sub_account_seedance" class="mt-3 rounded-lg border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs leading-relaxed text-amber-300">
-        ⚠ 风险提示：Adobe 子号通常不具备稳定的 Seedance 权限。开启后会直接请求 Adobe，上游容易返回 HTTP 408，生成成功率可能较低；发生 408 时不会自动证明账号失效。
-      </div>
-      <p v-if="adobeErr" class="text-xs text-rose-300 mt-3">{{ adobeErr }}</p>
-      <div class="mt-4">
-        <button @click="saveAdobe" :disabled="adobeBusy" class="btn-primary">{{ adobeBusy ? '保存中…' : '保存设置' }}</button>
-      </div>
     </div>
 
     <!-- rewards -->

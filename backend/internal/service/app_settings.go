@@ -57,13 +57,6 @@ type DeAISettings struct {
 	Price4K int  `json:"price_4k"`
 }
 
-// AdobeSettings controls provider-specific scheduling behavior. Sub-account
-// Seedance access is deliberately opt-in: Adobe commonly rejects these
-// requests with HTTP 408, so the safe default keeps those accounts filtered.
-type AdobeSettings struct {
-	AllowSubAccountSeedance bool `json:"allow_sub_account_seedance"`
-}
-
 type ProxySettings struct {
 	Proxy string `json:"proxy"`
 }
@@ -512,27 +505,6 @@ func (s *AppSettingsService) SaveDeAI(ctx context.Context, in DeAISettings) (*De
 		return nil, err
 	}
 	return s.DeAI(ctx)
-}
-
-func (s *AppSettingsService) Adobe(ctx context.Context) (*AdobeSettings, error) {
-	raw, err := s.settings.GetValue(ctx, "adobe.allow_sub_account_seedance")
-	if err != nil {
-		return nil, err
-	}
-	return &AdobeSettings{
-		AllowSubAccountSeedance: parseBoolSetting(raw, false),
-	}, nil
-}
-
-func (s *AppSettingsService) SaveAdobe(ctx context.Context, in AdobeSettings) (*AdobeSettings, error) {
-	if err := s.settings.UpsertValue(
-		ctx,
-		"adobe.allow_sub_account_seedance",
-		strconv.FormatBool(in.AllowSubAccountSeedance),
-	); err != nil {
-		return nil, err
-	}
-	return s.Adobe(ctx)
 }
 
 func clampNonNegative(n int) int {

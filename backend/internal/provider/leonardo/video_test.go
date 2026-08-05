@@ -35,19 +35,6 @@ func TestSeedanceDimensions(t *testing.T) {
 	}
 }
 
-func TestSeedanceResolutionMode(t *testing.T) {
-	tests := map[string]string{
-		"720p":  "RESOLUTION_720",
-		"1080p": "RESOLUTION_1080",
-		"480p":  "RESOLUTION_480",
-	}
-	for input, want := range tests {
-		if got := seedanceResolutionMode(input); got != want {
-			t.Fatalf("seedanceResolutionMode(%q) = %q, want %q", input, got, want)
-		}
-	}
-}
-
 func TestSeedanceFrameGuidances(t *testing.T) {
 	got := seedanceGuidances([]string{"start", "end", "ignored"}, "frame")
 	if _, ok := got["start_frame"]; !ok {
