@@ -135,21 +135,21 @@ func (s *TokenService) RefreshExpiringTokens(ctx context.Context) {
 				continue
 			}
 			if _, rerr := leonardoRefreshAndPersist(ctx, s.leonardo, s.tokens, it.ID, it.Value); rerr != nil && errors.Is(rerr, leonardo.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, "leonardo", it.ID, map[string]any{"status": "disabled", "dead": true})
+				_, _ = s.tokens.Update(ctx, "leonardo", it.ID, abnormalPatch("Leonardo 定时保活失败", rerr))
 			}
 		case "krea":
 			if s.krea == nil {
 				continue
 			}
 			if _, rerr := kreaRefreshAndPersist(ctx, s.krea, s.tokens, it.ID, it.Value); rerr != nil && errors.Is(rerr, krea.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, "krea", it.ID, map[string]any{"status": "disabled", "dead": true})
+				_, _ = s.tokens.Update(ctx, "krea", it.ID, abnormalPatch("Krea 定时续期失败", rerr))
 			}
 		case "imagine":
 			if s.imagine == nil {
 				continue
 			}
 			if _, rerr := imagineRefreshAndPersist(ctx, s.imagine, s.tokens, it.ID, it.Value); rerr != nil && errors.Is(rerr, imagine.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, "imagine", it.ID, map[string]any{"status": "disabled", "dead": true})
+				_, _ = s.tokens.Update(ctx, "imagine", it.ID, abnormalPatch("Imagine 定时续期失败", rerr))
 			}
 		}
 	}
@@ -472,7 +472,7 @@ func (s *TokenService) checkPendingLeonardo(tokenID, cookie string) {
 		if refreshErr == nil {
 			data, err = s.leonardo.FetchCreditsBalance(ctx, fresh)
 		} else if errors.Is(refreshErr, leonardo.ErrAuth) {
-			s.finishPending(ctx, "leonardo", tokenID, "disabled", true, nil)
+			s.finishPendingAbnormal(ctx, "leonardo", tokenID, "Leonardo 导入校验失败", refreshErr, nil)
 			return
 		} else {
 			s.finishPending(ctx, "leonardo", tokenID, "active", false, nil)
@@ -481,7 +481,7 @@ func (s *TokenService) checkPendingLeonardo(tokenID, cookie string) {
 	}
 	if err != nil {
 		if errors.Is(err, leonardo.ErrAuth) {
-			s.finishPending(ctx, "leonardo", tokenID, "disabled", true, nil)
+			s.finishPendingAbnormal(ctx, "leonardo", tokenID, "Leonardo 导入额度校验失败", err, nil)
 			return
 		}
 		// network/proxy blip — benefit of the doubt, activate.
@@ -596,7 +596,7 @@ func (s *TokenService) checkPendingKrea(tokenID, cookie string) {
 	cookie, rerr := kreaRefreshAndPersist(ctx, s.krea, s.tokens, tokenID, cookie)
 	if rerr != nil {
 		if errors.Is(rerr, krea.ErrAuth) {
-			s.finishPending(ctx, "krea", tokenID, "disabled", true, nil)
+			s.finishPendingAbnormal(ctx, "krea", tokenID, "Krea 导入续期失败", rerr, nil)
 			return
 		}
 		s.finishPending(ctx, "krea", tokenID, "active", false, nil)
@@ -605,7 +605,7 @@ func (s *TokenService) checkPendingKrea(tokenID, cookie string) {
 	data, err := s.krea.FetchCreditsBalance(ctx, cookie)
 	if err != nil {
 		if errors.Is(err, krea.ErrAuth) {
-			s.finishPending(ctx, "krea", tokenID, "disabled", true, nil)
+			s.finishPendingAbnormal(ctx, "krea", tokenID, "Krea 导入额度校验失败", err, nil)
 			return
 		}
 		s.finishPending(ctx, "krea", tokenID, "active", false, nil)
@@ -691,7 +691,7 @@ func (s *TokenService) checkPendingImagine(tokenID, cred string) {
 	cred, rerr := imagineRefreshAndPersist(ctx, s.imagine, s.tokens, tokenID, cred)
 	if rerr != nil {
 		if errors.Is(rerr, imagine.ErrAuth) {
-			s.finishPending(ctx, "imagine", tokenID, "disabled", true, nil)
+			s.finishPendingAbnormal(ctx, "imagine", tokenID, "Imagine 导入续期失败", rerr, nil)
 			return
 		}
 		s.finishPending(ctx, "imagine", tokenID, "active", false, nil)
@@ -700,7 +700,7 @@ func (s *TokenService) checkPendingImagine(tokenID, cred string) {
 	data, err := s.imagine.FetchCreditsBalance(ctx, cred)
 	if err != nil {
 		if errors.Is(err, imagine.ErrAuth) {
-			s.finishPending(ctx, "imagine", tokenID, "disabled", true, nil)
+			s.finishPendingAbnormal(ctx, "imagine", tokenID, "Imagine 导入额度校验失败", err, nil)
 			return
 		}
 		s.finishPending(ctx, "imagine", tokenID, "active", false, nil)
@@ -786,12 +786,12 @@ func (s *TokenService) checkPendingAdobe(tokenID, cookie string) {
 	defer cancel()
 
 	if s.adobe == nil {
-		s.finishPending(ctx, "adobe", tokenID, "disabled", true, nil)
+		s.finishPendingAbnormal(ctx, "adobe", tokenID, "Adobe 导入校验失败", errors.New("Adobe 客户端未配置"), nil)
 		return
 	}
 	result, err := s.adobe.ExchangeCookie(ctx, cookie)
 	if err != nil {
-		s.finishPending(ctx, "adobe", tokenID, "disabled", true, nil)
+		s.finishPendingAbnormal(ctx, "adobe", tokenID, "Adobe 导入时 Cookie 换取 access token 失败", err, nil)
 		_, _ = s.refresh.Update(ctx, tokenID, map[string]any{
 			"last_attempt_at":      time.Now(),
 			"last_error":           err.Error(),
@@ -871,7 +871,7 @@ func (s *TokenService) checkPendingChatGPT(tokenID, accessToken string) {
 		return
 	}
 	if boolValueWithDefault(data["auth_failed"], false) {
-		s.finishPending(ctx, "chatgpt", tokenID, "disabled", true, nil)
+		s.finishPendingAbnormal(ctx, "chatgpt", tokenID, "OpenAI 导入额度校验失败", providerAuthError("OpenAI"), nil)
 		return
 	}
 	rem, exhausted := chatgptRemaining(data)
@@ -932,7 +932,7 @@ func (s *TokenService) checkPendingRunway(tokenID, accessToken string) {
 	data, err := s.runway.FetchCreditsBalance(ctx, accessToken)
 	if err != nil {
 		if errors.Is(err, runway.ErrAuth) {
-			s.finishPending(ctx, "runway", tokenID, "disabled", true, nil)
+			s.finishPendingAbnormal(ctx, "runway", tokenID, "Runway 导入额度校验失败", err, nil)
 			return
 		}
 		// network/proxy error — benefit of the doubt, activate.
@@ -1016,7 +1016,7 @@ func (s *TokenService) checkPendingGrok(tokenID, ssoToken string) {
 	// import couldn't resolve it (empty account_email currently shows the session id).
 	if email, _, serr := s.grok.FetchSession(ctx, ssoToken); serr != nil {
 		if errors.Is(serr, grok.ErrAuth) {
-			s.finishPending(ctx, "grok", tokenID, "disabled", true, nil)
+			s.finishPendingAbnormal(ctx, "grok", tokenID, "Grok 导入会话校验失败", serr, nil)
 			return
 		}
 	} else if strings.TrimSpace(email) != "" {
@@ -1025,7 +1025,7 @@ func (s *TokenService) checkPendingGrok(tokenID, ssoToken string) {
 	data, err := s.grok.FetchCreditsBalance(ctx, ssoToken)
 	if err != nil {
 		if errors.Is(err, grok.ErrAuth) {
-			s.finishPending(ctx, "grok", tokenID, "disabled", true, nil)
+			s.finishPendingAbnormal(ctx, "grok", tokenID, "Grok 导入额度校验失败", err, nil)
 			return
 		}
 		s.finishPending(ctx, "grok", tokenID, "active", false, nil)
@@ -1088,13 +1088,13 @@ func (s *TokenService) RefreshGrokLiveness(ctx context.Context) {
 		if serr != nil {
 			if errors.Is(serr, grok.ErrAuth) {
 				// 3 consecutive 401/403 → the sso session is genuinely dead.
-				_, _ = s.tokens.Update(ctx, "grok", it.ID, map[string]any{"status": "disabled", "dead": true})
+				_, _ = s.tokens.Update(ctx, "grok", it.ID, abnormalPatch("Grok 定时存活检查连续三次认证失败", serr))
 			}
 			continue // other transient upstream error → leave as-is, retry next tick
 		}
 		if sub == nil || !sub.Member {
 			// no ACTIVE subscription (INACTIVE / empty) → membership lapsed → dead.
-			_, _ = s.tokens.Update(ctx, "grok", it.ID, map[string]any{"status": "disabled", "dead": true})
+			_, _ = s.tokens.Update(ctx, "grok", it.ID, abnormalPatch("Grok 定时存活检查失败", errors.New("订阅已失效或账号不再是有效会员")))
 			continue
 		}
 		data, derr := s.grok.FetchCreditsBalance(ctx, it.Value)
@@ -1187,6 +1187,14 @@ func (s *TokenService) ImportCustomAccount(ctx context.Context, baseURL, apiKey,
 // finishPending writes the terminal status/dead flag and clears the pending_check
 // marker (merging any cached quota) for a background import probe.
 func (s *TokenService) finishPending(ctx context.Context, pool, id, status string, dead bool, quotaMeta map[string]any) {
+	s.finishPendingWithError(ctx, pool, id, status, dead, "", nil, quotaMeta)
+}
+
+func (s *TokenService) finishPendingAbnormal(ctx context.Context, pool, id, source string, cause error, quotaMeta map[string]any) {
+	s.finishPendingWithError(ctx, pool, id, "disabled", true, source, cause, quotaMeta)
+}
+
+func (s *TokenService) finishPendingWithError(ctx context.Context, pool, id, status string, dead bool, source string, cause error, quotaMeta map[string]any) {
 	item, err := s.tokens.Get(ctx, pool, id)
 	if err != nil {
 		return
@@ -1196,9 +1204,9 @@ func (s *TokenService) finishPending(ctx context.Context, pool, id, status strin
 	for k, v := range quotaMeta {
 		meta[k] = v
 	}
-	patch := map[string]any{"status": status, "meta": meta}
+	patch := map[string]any{"status": status, "dead": dead, "meta": meta}
 	if dead {
-		patch["dead"] = true
+		patch["last_error"] = accountErrorMessage(source, cause)
 	}
 	_, _ = s.tokens.Update(ctx, pool, id, patch)
 }
@@ -1217,6 +1225,8 @@ func (s *TokenService) Update(ctx context.Context, pool, id string, body map[str
 		patch["status"] = status
 		if status == "active" {
 			patch["dead"] = false
+			patch["last_error"] = ""
+			patch["last_error_at"] = nil
 			if _, hasFails := body["fails"]; !hasFails {
 				patch["fails"] = 0
 			}
@@ -1229,6 +1239,8 @@ func (s *TokenService) Update(ctx context.Context, pool, id string, body map[str
 		}
 		patch["value"] = value
 		patch["dead"] = false
+		patch["last_error"] = ""
+		patch["last_error_at"] = nil
 	}
 	if raw, ok := body["fails"]; ok {
 		patch["fails"] = intValue(raw)
@@ -1319,11 +1331,9 @@ func (s *TokenService) Quota(ctx context.Context, pool, id string) (map[string]a
 		}
 		authFailed := boolValueWithDefault(data["auth_failed"], false)
 		if authFailed {
-			_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
-				"status": "disabled",
-				"dead":   true,
-				"fails":  gorm.Expr("fails + 1"),
-			})
+			fatal := abnormalPatch("OpenAI 额度查询认证失败", providerAuthError("OpenAI"))
+			fatal["fails"] = gorm.Expr("fails + 1")
+			_, _ = s.tokens.Update(ctx, item.Pool, item.ID, fatal)
 		}
 		patch := map[string]any{}
 		meta := cloneJSONMap(item.Meta)
@@ -1364,11 +1374,9 @@ func (s *TokenService) Quota(ctx context.Context, pool, id string) (map[string]a
 		data, err := s.adobe.FetchCreditsBalance(ctx, item.Value)
 		if err != nil {
 			if errors.Is(err, adobe.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
-					"status": "disabled",
-					"dead":   true,
-					"fails":  gorm.Expr("fails + 1"),
-				})
+				fatal := abnormalPatch("Adobe 额度查询认证失败", err)
+				fatal["fails"] = gorm.Expr("fails + 1")
+				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, fatal)
 			}
 			return nil, err
 		}
@@ -1412,18 +1420,18 @@ func (s *TokenService) Quota(ctx context.Context, pool, id string) (map[string]a
 		cookie, rerr := kreaRefreshAndPersist(ctx, s.krea, s.tokens, item.ID, item.Value)
 		if rerr != nil {
 			if errors.Is(rerr, krea.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
-					"status": "disabled", "dead": true, "fails": gorm.Expr("fails + 1"),
-				})
+				fatal := abnormalPatch("Krea 额度查询前续期失败", rerr)
+				fatal["fails"] = gorm.Expr("fails + 1")
+				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, fatal)
 			}
 			return nil, rerr
 		}
 		data, err := s.krea.FetchCreditsBalance(ctx, cookie)
 		if err != nil {
 			if errors.Is(err, krea.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
-					"status": "disabled", "dead": true, "fails": gorm.Expr("fails + 1"),
-				})
+				fatal := abnormalPatch("Krea 额度查询认证失败", err)
+				fatal["fails"] = gorm.Expr("fails + 1")
+				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, fatal)
 			}
 			return nil, err
 		}
@@ -1462,18 +1470,18 @@ func (s *TokenService) Quota(ctx context.Context, pool, id string) (map[string]a
 		cred, rerr := imagineRefreshAndPersist(ctx, s.imagine, s.tokens, item.ID, item.Value)
 		if rerr != nil {
 			if errors.Is(rerr, imagine.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
-					"status": "disabled", "dead": true, "fails": gorm.Expr("fails + 1"),
-				})
+				fatal := abnormalPatch("Imagine 额度查询前续期失败", rerr)
+				fatal["fails"] = gorm.Expr("fails + 1")
+				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, fatal)
 			}
 			return nil, rerr
 		}
 		data, err := s.imagine.FetchCreditsBalance(ctx, cred)
 		if err != nil {
 			if errors.Is(err, imagine.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
-					"status": "disabled", "dead": true, "fails": gorm.Expr("fails + 1"),
-				})
+				fatal := abnormalPatch("Imagine 额度查询认证失败", err)
+				fatal["fails"] = gorm.Expr("fails + 1")
+				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, fatal)
 			}
 			return nil, err
 		}
@@ -1511,11 +1519,9 @@ func (s *TokenService) Quota(ctx context.Context, pool, id string) (map[string]a
 		data, err := s.leonardo.FetchCreditsBalance(ctx, item.Value)
 		if err != nil {
 			if errors.Is(err, leonardo.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
-					"status": "disabled",
-					"dead":   true,
-					"fails":  gorm.Expr("fails + 1"),
-				})
+				fatal := abnormalPatch("Leonardo 额度查询认证失败", err)
+				fatal["fails"] = gorm.Expr("fails + 1")
+				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, fatal)
 			}
 			return nil, err
 		}
@@ -1557,11 +1563,9 @@ func (s *TokenService) Quota(ctx context.Context, pool, id string) (map[string]a
 		data, err := s.runway.FetchCreditsBalance(ctx, item.Value)
 		if err != nil {
 			if errors.Is(err, runway.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
-					"status": "disabled",
-					"dead":   true,
-					"fails":  gorm.Expr("fails + 1"),
-				})
+				fatal := abnormalPatch("Runway 额度查询认证失败", err)
+				fatal["fails"] = gorm.Expr("fails + 1")
+				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, fatal)
 			}
 			return nil, err
 		}
@@ -1602,11 +1606,9 @@ func (s *TokenService) Quota(ctx context.Context, pool, id string) (map[string]a
 		data, err := s.grok.FetchCreditsBalance(ctx, item.Value)
 		if err != nil {
 			if errors.Is(err, grok.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
-					"status": "disabled",
-					"dead":   true,
-					"fails":  gorm.Expr("fails + 1"),
-				})
+				fatal := abnormalPatch("Grok 额度查询认证失败", err)
+				fatal["fails"] = gorm.Expr("fails + 1")
+				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, fatal)
 			}
 			return nil, err
 		}
@@ -1702,11 +1704,9 @@ func (s *TokenService) Email(ctx context.Context, pool, id string) (map[string]a
 		profile, err := s.adobe.FetchAccountProfile(ctx, item.Value)
 		if err != nil {
 			if errors.Is(err, adobe.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
-					"status": "disabled",
-					"dead":   true,
-					"fails":  gorm.Expr("fails + 1"),
-				})
+				fatal := abnormalPatch("Adobe 账号信息查询认证失败", err)
+				fatal["fails"] = gorm.Expr("fails + 1")
+				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, fatal)
 			}
 			return nil, err
 		}
@@ -1764,6 +1764,19 @@ func accountRow(item model.TokenAccount, inFlight int64) map[string]any {
 	if item.Meta != nil {
 		teamID = strings.TrimSpace(stringValue(item.Meta["team_id"]))
 	}
+	lastError := strings.TrimSpace(item.LastError)
+	lastErrorAt := unixOrNil(item.LastErrorAt)
+	// Compatibility for Leonardo accounts disabled before the dedicated columns
+	// existed: the keepalive code already persisted its safe error and attempt
+	// timestamp in Meta, so surface those instead of losing useful history.
+	if lastError == "" && item.Dead && item.Pool == "leonardo" {
+		if legacy := strings.TrimSpace(stringValue(item.Meta["session_refresh_error"])); legacy != "" {
+			lastError = accountErrorMessage("Leonardo 定时保活失败", errors.New(legacy))
+			if attemptedAt, ok := jsonMapInt(item.Meta, "session_refresh_attempted_at"); ok && attemptedAt > 0 {
+				lastErrorAt = attemptedAt
+			}
+		}
+	}
 	hasQuota := typeLabel == "openai" || typeLabel == "adobe" || typeLabel == "runway" || typeLabel == "leonardo" || typeLabel == "krea" || typeLabel == "imagine" || typeLabel == "grok"
 	return map[string]any{
 		"id":                item.ID,
@@ -1776,6 +1789,8 @@ func accountRow(item model.TokenAccount, inFlight int64) map[string]any {
 		"quota_cached_at":   valueOrNil(quotaAt != 0, quotaAt),
 		"created_at":        unixOrNil(item.AddedAt),
 		"last_used_at":      unixOrNil(item.LastUsedAt),
+		"last_error":        emptyToNil(lastError),
+		"last_error_at":     lastErrorAt,
 		"expires_at":        jwtExpiryUnix(item.Value),
 		"in_flight":         inFlight,
 		"success_total":     item.SuccessTotal,

@@ -69,20 +69,19 @@ func (s *RefreshProfileService) RefreshNow(ctx context.Context, id string) error
 		// so the UI flags it red. A single failure may be a transient blip, so
 		// only escalate after a few in a row (mirrors Python RefreshManager).
 		if failures >= 3 {
-			_, _ = s.tokens.Update(ctx, profile.Pool, id, map[string]any{
-				"status": "disabled",
-				"dead":   true,
-			})
+			_, _ = s.tokens.Update(ctx, profile.Pool, id, abnormalPatch("Adobe Cookie 连续三次自动续期失败", err))
 		}
 		return err
 	}
 
 	tokenPatch := map[string]any{
-		"value":      result.AccessToken,
-		"status":     "active",
-		"dead":       false,
-		"fails":      0,
-		"updated_at": now,
+		"value":         result.AccessToken,
+		"status":        "active",
+		"dead":          false,
+		"fails":         0,
+		"last_error":    "",
+		"last_error_at": nil,
+		"updated_at":    now,
 	}
 	email, exp := parseJWTEmailExpiry(result.AccessToken)
 	if email != "" {

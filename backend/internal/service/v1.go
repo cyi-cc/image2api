@@ -1553,7 +1553,7 @@ func (s *V1Service) tryAccount(ctx context.Context, eventID, pool string, token 
 		}
 		isAuth, isQuota, isTemp, isDead := classify(err)
 		if isQuota {
-			s.markTokenFailure(ctx, pool, token, kind, false, true)
+			s.markTokenFailure(ctx, pool, token, kind, err, false, true)
 			return nil, err, true, false
 		}
 		if isAuth {
@@ -1565,7 +1565,7 @@ func (s *V1Service) tryAccount(ctx context.Context, eventID, pool string, token 
 					continue
 				}
 			}
-			s.markTokenFailure(ctx, pool, token, kind, true, false)
+			s.markTokenFailure(ctx, pool, token, kind, err, true, false)
 			return nil, err, true, false
 		}
 		// Fatal / temporary-under-failover-policy upstream error.
@@ -1578,17 +1578,17 @@ func (s *V1Service) tryAccount(ctx context.Context, eventID, pool string, token 
 				// disable/dead). The 4th return value caps how many accounts one
 				// request may burn this way (maxTempDeadAccounts) so a pool-wide
 				// blip can't fan a single request across the whole pool.
-				s.markTokenFailure(ctx, pool, token, kind, false, false)
+				s.markTokenFailure(ctx, pool, token, kind, err, false, false)
 				return nil, err, true, true
 			}
-			s.markTokenDead(ctx, pool, token, kind)
+			s.markTokenDead(ctx, pool, token, kind, err)
 			return nil, err, true, true
 		}
 		if isTemp {
 			// Temporary upstream error → record the failure (no disable/dead) and
 			// fail over to the NEXT account, capped via the tempDead return so a
 			// pool-wide blip can't fan one request across the whole pool.
-			s.markTokenFailure(ctx, pool, token, kind, false, false)
+			s.markTokenFailure(ctx, pool, token, kind, err, false, false)
 			return nil, err, true, true
 		}
 		return nil, err, false, false // 参数错 / request-level
@@ -1808,7 +1808,7 @@ func (s *V1Service) generateRunwayVideo(ctx context.Context, eventID string, mod
 			switch {
 			case errors.Is(genErr, runway.ErrAuth), errors.Is(genErr, runway.ErrQuotaExhausted):
 				// 额度没了 / token 失效 → 当 401 判死(status=disabled, dead),换号。
-				s.markTokenFailure(ctx, "runway", token, "video", true, false)
+				s.markTokenFailure(ctx, "runway", token, "video", genErr, true, false)
 				return false, true
 			case errors.Is(genErr, runway.ErrTemporaryUpstream):
 				// 上游临时错误 → 直接换下一个号。
@@ -1944,10 +1944,10 @@ func (s *V1Service) generateCustomImage(ctx context.Context, eventID string, mod
 			lastErr = genErr
 			switch {
 			case errors.Is(genErr, custom.ErrAuth):
-				s.markTokenFailure(ctx, "custom", token, "image", true, false)
+				s.markTokenFailure(ctx, "custom", token, "image", genErr, true, false)
 				return false, true
 			case errors.Is(genErr, custom.ErrQuotaExhausted):
-				s.markTokenFailure(ctx, "custom", token, "image", false, true)
+				s.markTokenFailure(ctx, "custom", token, "image", genErr, false, true)
 				return false, true
 			case errors.Is(genErr, custom.ErrTemporaryUpstream):
 				return false, true
@@ -2019,10 +2019,10 @@ func (s *V1Service) generateCustomVideo(ctx context.Context, eventID string, mod
 			lastErr = genErr
 			switch {
 			case errors.Is(genErr, custom.ErrAuth):
-				s.markTokenFailure(ctx, "custom", token, "video", true, false)
+				s.markTokenFailure(ctx, "custom", token, "video", genErr, true, false)
 				return false, true
 			case errors.Is(genErr, custom.ErrQuotaExhausted):
-				s.markTokenFailure(ctx, "custom", token, "video", false, true)
+				s.markTokenFailure(ctx, "custom", token, "video", genErr, false, true)
 				return false, true
 			case errors.Is(genErr, custom.ErrTemporaryUpstream):
 				return false, true
@@ -2193,7 +2193,7 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 			switch {
 			case errors.Is(genErr, grok.ErrAuth), errors.Is(genErr, grok.ErrQuotaExhausted):
 				// 失效 / 额度没了 → 当 401 判死(不续期),换号。
-				s.markTokenFailure(ctx, "grok", token, "video", true, false)
+				s.markTokenFailure(ctx, "grok", token, "video", genErr, true, false)
 				return false, true
 			case errors.Is(genErr, grok.ErrTemporaryUpstream):
 				return false, true
@@ -2307,7 +2307,7 @@ func (s *V1Service) generateRunwayImage(ctx context.Context, eventID string, mod
 			switch {
 			case errors.Is(genErr, runway.ErrAuth), errors.Is(genErr, runway.ErrQuotaExhausted):
 				// 额度没了 / token 失效 → 当 401 判死(status=disabled, dead),换号。
-				s.markTokenFailure(ctx, "runway", token, "image", true, false)
+				s.markTokenFailure(ctx, "runway", token, "image", genErr, true, false)
 				return false, true
 			case errors.Is(genErr, runway.ErrTemporaryUpstream):
 				// 上游临时错误 → 直接换下一个号。
@@ -3302,7 +3302,7 @@ func principalCredits(principal *APIPrincipal) float64 {
 //     cookie, so rotate for this request and let the refresh loop mint a new one.
 //   - other (non-auth/non-quota): NEITHER pool is auto-disabled — accounts stay
 //     active/green and fails is tracked only for rotation ordering.
-func (s *V1Service) markTokenFailure(ctx context.Context, pool string, token model.TokenAccount, kind string, isAuth, isQuota bool) {
+func (s *V1Service) markTokenFailure(ctx context.Context, pool string, token model.TokenAccount, kind string, cause error, isAuth, isQuota bool) {
 	patch := map[string]any{
 		"last_used_at": time.Now(),
 		"fail_total":   gorm.Expr("fail_total + 1"),
@@ -3334,6 +3334,7 @@ func (s *V1Service) markTokenFailure(ctx context.Context, pool string, token mod
 		if pool == "chatgpt" || pool == "runway" || pool == "leonardo" || pool == "krea" || pool == "imagine" {
 			patch["status"] = "disabled"
 			patch["dead"] = true
+			patch["last_error"] = accountErrorMessage(providerDisplayName(pool)+" "+generationKindLabel(kind)+"生成认证失败", cause)
 		}
 	default:
 		// Neither pool is auto-disabled on generic (non-auth / non-quota) failures
@@ -3346,14 +3347,30 @@ func (s *V1Service) markTokenFailure(ctx context.Context, pool string, token mod
 
 // markTokenDead disables an account and marks it dead on a fatal upstream error
 // (a non-overload temporary Adobe failure that ops policy treats as account death).
-func (s *V1Service) markTokenDead(ctx context.Context, pool string, token model.TokenAccount, kind string) {
+func (s *V1Service) markTokenDead(ctx context.Context, pool string, token model.TokenAccount, kind string, cause error) {
 	_, _ = s.tokens.Update(ctx, pool, token.ID, map[string]any{
 		"last_used_at": time.Now(),
 		"fail_total":   gorm.Expr("fail_total + 1"),
 		"fails":        gorm.Expr("fails + 1"),
 		"status":       "disabled",
 		"dead":         true,
+		"last_error":   accountErrorMessage(providerDisplayName(pool)+" "+generationKindLabel(kind)+"生成遇到致命上游错误", cause),
 	})
+}
+
+func providerDisplayName(pool string) string {
+	return map[string]string{
+		"chatgpt": "OpenAI", "adobe": "Adobe", "runway": "Runway",
+		"leonardo": "Leonardo", "krea": "Krea", "imagine": "Imagine",
+		"grok": "Grok", "custom": "自定义上游",
+	}[pool]
+}
+
+func generationKindLabel(kind string) string {
+	if kind == "video" {
+		return "视频"
+	}
+	return "图片"
 }
 
 // nextCursor returns the pool's current round-robin position and atomically

@@ -337,7 +337,7 @@ func (h *ProviderAdminHandler) AccountsList(c *gin.Context) {
 	// of the current filter/page — mirrors the old client-side `stats` computed.
 	stats := accountsStats(data)
 
-	// Server-side filtering (类型 / 状态 / 搜索 邮箱·ID·类型 / dead) so pagination is
+	// Server-side filtering (类型 / 状态 / 搜索 邮箱·ID·类型·异常 / dead) so pagination is
 	// correct across pages. ?dead=1 returns only 异常(已失效) accounts — used by
 	// 「删除异常账号」to collect every dead id regardless of the current page.
 	typeFilter := strings.TrimSpace(c.Query("type"))
@@ -359,7 +359,8 @@ func (h *ProviderAdminHandler) AccountsList(c *gin.Context) {
 			email := strings.ToLower(rowStr(row, "email"))
 			id := strings.ToLower(rowStr(row, "id"))
 			typ := strings.ToLower(rowStr(row, "type"))
-			if !strings.Contains(email, q) && !strings.Contains(id, q) && !strings.Contains(typ, q) {
+			lastError := strings.ToLower(rowStr(row, "last_error"))
+			if !strings.Contains(email, q) && !strings.Contains(id, q) && !strings.Contains(typ, q) && !strings.Contains(lastError, q) {
 				continue
 			}
 		}

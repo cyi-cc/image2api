@@ -186,7 +186,12 @@ type TokenAccount struct {
 	Meta                  datatypes.JSONMap `gorm:"type:jsonb"`
 	AddedAt               *time.Time
 	LastUsedAt            *time.Time
-	CachedQuotaResetAfter string `gorm:"size:128"`
+	// LastError records why the account most recently entered an automatic
+	// abnormal/disabled state. It intentionally lives outside Meta so the admin
+	// account list can query and render it consistently for every provider.
+	LastError             string     `gorm:"type:text"`
+	LastErrorAt           *time.Time `gorm:"index"`
+	CachedQuotaResetAfter string     `gorm:"size:128"`
 	QuotaRecoverAt        *time.Time
 	// Adobe quota is tracked separately for image vs video. An account only
 	// enters the shared "quota" waiting status when BOTH are limited; a single

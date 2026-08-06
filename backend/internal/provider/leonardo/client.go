@@ -46,6 +46,26 @@ var (
 	ErrTemporaryUpstream = errors.New("leonardo upstream temporary error")
 )
 
+// AuthError preserves the safe, actionable part of a get-session failure while
+// still matching ErrAuth through errors.Is. It never includes Cookie or bearer
+// values, so callers can persist Error() for the admin abnormal-reason column.
+type AuthError struct {
+	Code   string
+	Detail string
+}
+
+func (e *AuthError) Error() string {
+	detail := strings.TrimSpace(e.Detail)
+	if detail == "" {
+		return ErrAuth.Error()
+	}
+	return ErrAuth.Error() + ": " + detail
+}
+
+func (e *AuthError) Is(target error) bool {
+	return target == ErrAuth
+}
+
 type Client struct {
 	proxy string
 	// sessions caches the short-lived access token per cookie so we don't hit
@@ -269,7 +289,10 @@ func (c *Client) fetchSession(ctx context.Context, cookie string, forceFresh boo
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		return nil, nil, ErrAuth
+		return nil, nil, &AuthError{
+			Code:   fmt.Sprintf("get_session_http_%d", resp.StatusCode),
+			Detail: fmt.Sprintf("get-session 返回 HTTP %d，session cookie 已失效或被拒绝", resp.StatusCode),
+		}
 	}
 	if resp.StatusCode != 200 {
 		return nil, nil, fmt.Errorf("%w: get-session http %d: %s", ErrTemporaryUpstream, resp.StatusCode, clip(body, 160))
@@ -293,7 +316,10 @@ func (c *Client) fetchSession(ctx context.Context, cookie string, forceFresh boo
 	}
 	if strings.TrimSpace(raw.Session.AccessToken) == "" {
 		// No bearer despite 200 → the cookie no longer authenticates.
-		return nil, nil, ErrAuth
+		return nil, nil, &AuthError{
+			Code:   "get_session_missing_access_token",
+			Detail: "get-session 返回 HTTP 200，但响应中缺少 accessToken",
+		}
 	}
 	uid := raw.Session.UserID
 	if uid == "" {

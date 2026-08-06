@@ -77,7 +77,9 @@ func (r *TokenRepository) Create(ctx context.Context, item *model.TokenAccount) 
 }
 
 func (r *TokenRepository) Update(ctx context.Context, pool, id string, patch map[string]any) (*model.TokenAccount, error) {
-	patch["updated_at"] = time.Now()
+	now := time.Now()
+	decorateAccountStatePatch(patch, now)
+	patch["updated_at"] = now
 	if err := r.db.WithContext(ctx).
 		Model(&model.TokenAccount{}).
 		Where("pool = ? AND id = ?", pool, id).
@@ -87,6 +89,44 @@ func (r *TokenRepository) Update(ctx context.Context, pool, id string, patch map
 	return r.Get(ctx, pool, id)
 }
 
+// decorateAccountStatePatch makes abnormal-state metadata impossible to forget
+// at one of the many provider-specific disable call sites. Callers should pass a
+// useful last_error whenever available; this fallback still records that an
+// automatic disable happened and when. Reactivation/reimport clears stale data.
+func decorateAccountStatePatch(patch map[string]any, now time.Time) {
+	status, _ := patch["status"].(string)
+	dead, hasDead := patch["dead"].(bool)
+
+	if status == "disabled" && hasDead && dead {
+		reason, hasReason := patch["last_error"]
+		if !hasReason || strings.TrimSpace(valueString(reason)) == "" {
+			patch["last_error"] = "账号已自动禁用（未记录具体上游错误）"
+		}
+		if _, ok := patch["last_error_at"]; !ok {
+			stamp := now
+			patch["last_error_at"] = &stamp
+		}
+		return
+	}
+
+	// A validated active/pending credential, or an explicit dead=false update,
+	// means a previous fatal error is no longer the current account state.
+	if status == "active" || status == "pending" || (hasDead && !dead) {
+		patch["last_error"] = ""
+		patch["last_error_at"] = nil
+	}
+}
+
+func valueString(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
 // ReserveQuota atomically pre-deducts `amount` from an account's cached image
 // token balance under a row lock, so concurrent picks of the same near-empty
 // account can never over-commit it. Returns:
@@ -94,6 +134,7 @@ func (r *TokenRepository) Update(ctx context.Context, pool, id string, patch map
 //   - allowed=true, deducted=false: balance unknown → allowed without a hold
 //     (benefit of the doubt; a post-render reconcile writes the real value).
 //   - allowed=false: balance known and < amount → caller should fail over.
+//
 // RefundQuota releases a hold made with deducted=true when the render fails.
 func (r *TokenRepository) ReserveQuota(ctx context.Context, pool, id string, amount int) (allowed, deducted bool, err error) {
 	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -362,8 +403,9 @@ func (r *TokenRepository) ExpireByReset(ctx context.Context, pool string) (int, 
 			continue
 		}
 		if _, err := r.Update(ctx, t.Pool, t.ID, map[string]any{
-			"status": "disabled",
-			"dead":   true,
+			"status":     "disabled",
+			"dead":       true,
+			"last_error": "Runway 凭证已到期，无法继续请求上游",
 		}); err != nil {
 			return expired, err
 		}

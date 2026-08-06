@@ -28,6 +28,19 @@ func TestAccessTokenExpiry(t *testing.T) {
 	}
 }
 
+func TestAuthErrorMatchesErrAuthAndKeepsSafeDetail(t *testing.T) {
+	err := &AuthError{
+		Code:   "get_session_http_401",
+		Detail: "get-session 返回 HTTP 401，session cookie 已失效或被拒绝",
+	}
+	if !errors.Is(err, ErrAuth) {
+		t.Fatal("AuthError must match ErrAuth")
+	}
+	if got := err.Error(); got != "leonardo auth failed: get-session 返回 HTTP 401，session cookie 已失效或被拒绝" {
+		t.Fatalf("AuthError.Error() = %q", got)
+	}
+}
+
 func TestIsLeonardoCookieMatchesCookieNames(t *testing.T) {
 	tests := []struct {
 		name   string

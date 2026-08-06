@@ -166,6 +166,7 @@ async function reconcile() {
   if (total === 0) { quotaStatus.value = ''; return }
 
   let done = 0, updates = 0
+  let shouldReloadAccounts = false
   quotaStatus.value = `后台校对… 0/${total}`
   const bump = () => {
     done++
@@ -181,6 +182,7 @@ async function reconcile() {
   for (const row of quotaRows) {
     jobs.push(async () => {
       const result = await fetchOneQuota(row.pool, row.id)
+      if (result?.reload_accounts) shouldReloadAccounts = true
       if (result && result.auth_failed) {
         // backend auto-disabled this dead (401) token — reflect it immediately
         row.status = result.status || 'disabled'
@@ -209,6 +211,10 @@ async function reconcile() {
     })
   }
   await runWithLimit(jobs, Infinity)   // no JS-side cap — fire all visible-page probes at once (browser still limits ~6 conns/origin)
+  // An auth-error quota probe may have disabled the account server-side. Reload
+  // once after the batch so the abnormal reason/time appear without requiring a
+  // manual refresh; transient probe errors simply produce an unchanged reload.
+  if (myToken === reconcileToken && shouldReloadAccounts) await fetchAccounts()
   // clear the indicator when done — but only if we're still the current run
   // (a page flip mid-reconcile starts a fresh one that owns the indicator).
   if (myToken === reconcileToken) quotaStatus.value = ''
@@ -232,7 +238,11 @@ async function runWithLimit(thunks, limit) {
 }
 
 async function fetchOneQuota(pool, id) {
-  try { return (await api(`/accounts/${pool}/${id}/quota`)).data || {} }
+  try {
+    const r = await api(`/accounts/${pool}/${id}/quota`)
+    if (!r.ok) return { error: r.data?.detail || `HTTP ${r.status}`, reload_accounts: true }
+    return r.data || {}
+  }
   catch (e) { return { error: String(e) } }
 }
 async function fetchOneEmail(pool, id) {
@@ -373,7 +383,7 @@ onMounted(() => { loadAccounts(); loadModelList() })
         </button>
       </div>
       <div class="flex-1 min-w-[200px]">
-        <input v-model="search" class="field !py-1.5 text-xs" placeholder="搜索 邮箱 / ID / 类型…" />
+        <input v-model="search" class="field !py-1.5 text-xs" placeholder="搜索 邮箱 / ID / 类型 / 异常…" />
       </div>
       <button v-if="selected.size" @click="deleteSelected" class="btn-soft danger" title="删除选中的账号">
         <Icon name="trash" class="w-3.5 h-3.5" /> 删除选中 ({{ selected.size }})
@@ -403,7 +413,7 @@ onMounted(() => { loadAccounts(); loadModelList() })
         <button v-if="!stats.total" @click="showImport = true" class="btn-soft mt-1">导入第一个</button>
       </div>
 
-      <table v-else class="w-full text-sm table-fixed min-w-[1080px]">
+      <table v-else class="w-full text-sm table-fixed min-w-[1440px]">
         <colgroup>
           <col class="w-9" />      <!-- select -->
           <col />                  <!-- identity (flex) -->
@@ -415,6 +425,8 @@ onMounted(() => { loadAccounts(); loadModelList() })
           <col class="w-28" />     <!-- created -->
           <col class="w-28" />     <!-- last used -->
           <col class="w-40" />     <!-- inflight/success/fail -->
+          <col class="w-56" />     <!-- last error -->
+          <col class="w-28" />     <!-- last error time -->
           <col class="w-16" />     <!-- status switch -->
           <col class="w-32" />     <!-- actions -->
         </colgroup>
@@ -433,6 +445,8 @@ onMounted(() => { loadAccounts(); loadModelList() })
             <th class="text-left px-3 py-3 font-medium">创建时间</th>
             <th class="text-left px-3 py-3 font-medium">最后使用</th>
             <th class="text-center px-3 py-3 font-medium">在途 / 成功 / 失败</th>
+            <th class="text-left px-3 py-3 font-medium">异常信息</th>
+            <th class="text-left px-3 py-3 font-medium">异常时间</th>
             <th class="text-left px-3 py-3 font-medium">状态</th>
             <th class="text-right px-3 py-3 font-medium">操作</th>
           </tr>
@@ -523,6 +537,21 @@ onMounted(() => { loadAccounts(); loadModelList() })
                       :class="a.fail_total ? 'bg-rose-500/15 text-rose-300 font-medium' : 'text-white/25'"
                       title="失败">{{ a.fail_total || 0 }}</span>
               </div>
+            </td>
+            <!-- abnormal reason: keep rows compact; hover exposes the full text -->
+            <td class="px-3 py-3.5 align-middle min-w-0">
+              <div v-if="a.last_error"
+                   class="truncate text-xs text-rose-300/90"
+                   :title="a.last_error">{{ a.last_error }}</div>
+              <span v-else class="text-white/25">—</span>
+            </td>
+            <!-- abnormal time -->
+            <td class="px-3 py-3.5 align-middle text-xs whitespace-nowrap">
+              <div v-if="a.last_error_at" class="leading-tight" :title="fmtTs(a.last_error_at)">
+                <div class="text-white/65 tabular-nums">{{ fmtDate(a.last_error_at) }}</div>
+                <div class="text-white/35 tabular-nums">{{ fmtClock(a.last_error_at) }}</div>
+              </div>
+              <span v-else class="text-white/25">—</span>
             </td>
             <!-- status (switch) -->
             <td class="px-3 py-3.5 align-middle">
