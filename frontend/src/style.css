@@ -127,6 +127,8 @@ html:not(.dark) .theme-text .fp-rose { background: rgb(244 63 94 / 0.12); color:
 html:not(.dark) .theme-text .fp-fuchsia { background: rgb(217 70 239 / 0.12); color: rgb(162 28 175); box-shadow: inset 0 0 0 1px rgb(217 70 239 / 0.45); }
 html:not(.dark) .theme-text .fp-amber { background: rgb(245 158 11 / 0.16); color: rgb(180 83 9); box-shadow: inset 0 0 0 1px rgb(245 158 11 / 0.5); }
 html:not(.dark) .theme-text .fp-violet { background: rgb(139 92 246 / 0.14); color: rgb(109 40 217); box-shadow: inset 0 0 0 1px rgb(139 92 246 / 0.45); }
+html:not(.dark) .theme-text .fp-purple { background: rgb(168 85 247 / 0.14); color: rgb(107 33 168); box-shadow: inset 0 0 0 1px rgb(168 85 247 / 0.45); }
+html:not(.dark) .theme-text .fp-slate { background: rgb(100 116 139 / 0.14); color: rgb(51 65 85); box-shadow: inset 0 0 0 1px rgb(100 116 139 / 0.45); }
 html:not(.dark) .theme-text .fp-sky { background: rgb(14 165 233 / 0.14); color: rgb(3 105 161); box-shadow: inset 0 0 0 1px rgb(14 165 233 / 0.45); }
 html:not(.dark) .theme-text .fp-teal { background: rgb(20 184 166 / 0.14); color: rgb(15 118 110); box-shadow: inset 0 0 0 1px rgb(20 184 166 / 0.45); }
 
@@ -164,6 +166,28 @@ html:not(.dark) .theme-text .fp-teal { background: rgb(20 184 166 / 0.14); color
   margin-top: -0.12rem;
 }
 .chk:focus-visible { outline: 2px solid rgb(217 70 239 / 0.45); outline-offset: 1px; }
+/* Account identity tags (AccountsView: 子号 / 母号 / 普号 / 限额). The colors live
+   here rather than as inline dark-palette utilities, which were invisible on the
+   light theme: light values first, html.dark override after. */
+.acct-tag {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.25rem;
+  font-size: 10px;
+  line-height: 1.5;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.acct-tag-sub { background: rgb(14 165 233 / 0.14); color: rgb(3 105 161); box-shadow: inset 0 0 0 1px rgb(14 165 233 / 0.4); }
+.acct-tag-master { background: rgb(139 92 246 / 0.14); color: rgb(109 40 217); box-shadow: inset 0 0 0 1px rgb(139 92 246 / 0.4); }
+.acct-tag-free { background: rgb(100 116 139 / 0.14); color: rgb(51 65 85); box-shadow: inset 0 0 0 1px rgb(100 116 139 / 0.4); }
+.acct-tag-limit { background: rgb(245 158 11 / 0.16); color: rgb(180 83 9); box-shadow: inset 0 0 0 1px rgb(245 158 11 / 0.4); }
+html.dark .acct-tag-sub { background: rgb(14 165 233 / 0.18); color: rgb(125 211 252); box-shadow: inset 0 0 0 1px rgb(56 189 248 / 0.35); }
+html.dark .acct-tag-master { background: rgb(139 92 246 / 0.22); color: rgb(196 181 253); box-shadow: inset 0 0 0 1px rgb(167 139 250 / 0.35); }
+html.dark .acct-tag-free { background: rgb(148 163 184 / 0.22); color: rgb(226 232 240); box-shadow: inset 0 0 0 1px rgb(148 163 184 / 0.35); }
+html.dark .acct-tag-limit { background: rgb(245 158 11 / 0.18); color: rgb(252 211 77); box-shadow: inset 0 0 0 1px rgb(251 191 36 / 0.35); }
 /* Capability chips (ModelsView): all variants need bg + ring + color reset in light mode.
    The scoped dark-shell values (white-alpha bg/ring, pale text) are invisible on white. */
 html:not(.dark) .theme-text .cap-emerald {
@@ -274,6 +298,110 @@ button:not(:disabled), [role="button"]:not([aria-disabled="true"]) { cursor: poi
     radial-gradient(at 50% 90%, rgb(236 254 255) 0%, transparent 50%),
     rgb(250 250 251);
 }
+
+/* ===== 二次元 (anime) design kit =====
+   Soft pink/violet/sky gradients, rounded bubbly surfaces, sparkle overlays and
+   sticker labels. Reusable across the workbench + user subpages + public pages
+   so the whole front-end shares one cute, neon-tinged look. */
+
+/* Gradient text used for eyebrows / accents. */
+.anime-grad-text {
+  background: linear-gradient(100deg, #f472b6, #a855f7 46%, #38bdf8);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+/* Section eyebrow — tiny uppercase kicker with a leading star. */
+.anime-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+.anime-eyebrow::before { content: '✦'; font-size: 0.85em; }
+
+/* Sticker / kawaii pill label. */
+.sticker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.28rem 0.7rem;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #a21caf;
+  background: linear-gradient(135deg, rgb(244 114 182 / 0.16), rgb(129 140 248 / 0.16));
+  box-shadow: inset 0 0 0 1px rgb(217 70 239 / 0.28);
+}
+html.dark .sticker {
+  color: #f5d0fe;
+  background: linear-gradient(135deg, rgb(244 114 182 / 0.2), rgb(129 140 248 / 0.2));
+  box-shadow: inset 0 0 0 1px rgb(217 70 239 / 0.35), 0 0 18px -6px rgb(217 70 239 / 0.5);
+}
+
+/* Bubbly gradient CTA — pill button with a squishy hover. */
+.bubble-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.7rem 1.4rem;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #fff;
+  border: none;
+  cursor: pointer;
+  background: linear-gradient(135deg, #f472b6, #a855f7 55%, #38bdf8);
+  box-shadow: 0 14px 30px -12px rgb(168 85 247 / 0.7);
+  transition: transform 0.15s ease, filter 0.15s ease, box-shadow 0.15s ease;
+}
+.bubble-btn:hover { transform: translateY(-2px) scale(1.02); filter: brightness(1.06); }
+.bubble-btn:active { transform: translateY(0) scale(0.99); }
+
+/* Rounded anime card surface with a soft pastel wash + neon ring in dark. */
+.anime-card {
+  position: relative;
+  border-radius: 1.5rem;
+  background: var(--surface);
+  box-shadow: inset 0 0 0 1px var(--hairline);
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.anime-card:hover {
+  transform: translateY(-3px);
+  box-shadow: inset 0 0 0 1px rgb(217 70 239 / 0.4), 0 22px 44px -26px rgb(168 85 247 / 0.5);
+}
+html.dark .anime-card:hover {
+  box-shadow: inset 0 0 0 1px rgb(217 70 239 / 0.5), 0 0 30px -10px rgb(217 70 239 / 0.45);
+}
+
+/* Selected pill — replaces the old bg-slate-900 look with a candy gradient. */
+.chip-on {
+  color: #fff !important;
+  background: linear-gradient(135deg, #e879f9, #8b5cf6) !important;
+  box-shadow: 0 8px 20px -10px rgb(168 85 247 / 0.7) !important;
+}
+
+/* Twinkling star field — drop into any relatively-positioned decorative layer.
+   Uses layered radial-gradients so it's a single element, no extra DOM. */
+.anime-stars {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background-image:
+    radial-gradient(1.5px 1.5px at 12% 22%, rgb(217 70 239 / 0.7), transparent),
+    radial-gradient(1.5px 1.5px at 78% 12%, rgb(56 189 248 / 0.7), transparent),
+    radial-gradient(1px 1px at 42% 62%, rgb(168 85 247 / 0.65), transparent),
+    radial-gradient(1.5px 1.5px at 88% 72%, rgb(244 114 182 / 0.6), transparent),
+    radial-gradient(1px 1px at 24% 84%, rgb(56 189 248 / 0.55), transparent),
+    radial-gradient(1px 1px at 62% 34%, rgb(250 204 21 / 0.55), transparent);
+  animation: twinkle 4.5s ease-in-out infinite;
+}
+@keyframes twinkle { 0%, 100% { opacity: 0.85; } 50% { opacity: 0.4; } }
+@media (prefers-reduced-motion: reduce) { .anime-stars { animation: none; } }
 .ambient-grain::before {
   content: '';
   position: fixed;

@@ -1,6 +1,7 @@
 <script setup>
-// Vivid mark: a violet→fuchsia rounded badge with a faceted, folded "V".
-// Self-contained SVG so it renders identically on dark and light shells.
+// Vivid mark: an open spectrum ring (lens/aperture) around a folded "V", with a
+// shutter dot closing the gap — image + video in one glyph. Transparent
+// background so it reads on both the dark and light shells.
 // Each instance gets unique gradient ids (useId) so multiple logos on one
 // page don't share/clobber defs.
 import { useId } from 'vue'
@@ -8,32 +9,33 @@ import { useId } from 'vue'
 defineProps({ size: { type: [Number, String], default: 40 } })
 
 const uid = useId()
-const gBg = `vbg-${uid}`
-const gGloss = `vgl-${uid}`
+const gRing = `vring-${uid}`
+const gV = `vv-${uid}`
 </script>
 
 <template>
   <svg :width="size" :height="size" viewBox="0 0 48 48" fill="none"
        xmlns="http://www.w3.org/2000/svg" class="shrink-0">
     <defs>
-      <linearGradient :id="gBg" x1="6" y1="4" x2="42" y2="44" gradientUnits="userSpaceOnUse">
-        <stop stop-color="#a855f7" />
-        <stop offset="0.55" stop-color="#7c3aed" />
-        <stop offset="1" stop-color="#ec4899" />
+      <linearGradient :id="gRing" x1="6" y1="6" x2="42" y2="42" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#e879f9" />
+        <stop offset="0.5" stop-color="#8b5cf6" />
+        <stop offset="1" stop-color="#38bdf8" />
       </linearGradient>
-      <linearGradient :id="gGloss" x1="24" y1="2" x2="24" y2="30" gradientUnits="userSpaceOnUse">
-        <stop stop-color="#ffffff" stop-opacity="0.28" />
-        <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
+      <linearGradient :id="gV" x1="14" y1="14" x2="34" y2="34" gradientUnits="userSpaceOnUse">
+        <stop stop-color="#f0abfc" />
+        <stop offset="1" stop-color="#8b5cf6" />
       </linearGradient>
     </defs>
 
-    <!-- badge -->
-    <rect x="2" y="2" width="44" height="44" rx="13" :fill="`url(#${gBg})`" />
-    <!-- top gloss for depth -->
-    <rect x="2" y="2" width="44" height="22" rx="13" :fill="`url(#${gGloss})`" />
-
-    <!-- faceted V: left arm brighter, right arm dimmer -> folded look -->
-    <path d="M12 15 H19 L24 26 L24 37 Z" fill="#ffffff" fill-opacity="0.95" />
-    <path d="M36 15 H29 L24 26 L24 37 Z" fill="#ffffff" fill-opacity="0.72" />
+    <g transform="translate(24 24)">
+      <!-- open ring: dash gap leaves room for the shutter dot -->
+      <circle r="18.5" fill="none" :stroke="`url(#${gRing})`" stroke-width="3.2"
+              stroke-linecap="round" stroke-dasharray="86 30" transform="rotate(-58)" />
+      <!-- folded V -->
+      <path d="M-8 -7.5 L0 9 L8 -7.5" fill="none" :stroke="`url(#${gV})`" stroke-width="4.8"
+            stroke-linecap="round" stroke-linejoin="round" />
+      <circle cx="13" cy="-13" r="3.4" fill="#38bdf8" />
+    </g>
   </svg>
 </template>

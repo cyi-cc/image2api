@@ -6,8 +6,15 @@ import Icon from './Icon.vue'
 const props = defineProps({ account: { type: Object, required: true } })
 const emit = defineEmits(['close', 'saved'])
 
-// concurrency is only adjustable for custom upstreams — others are system-fixed.
+// concurrency is only adjustable for custom upstreams — others are system-fixed
+// (adobe is set from the plan on every quota refresh: 会员号 5 / 普号 1).
 const canEditConcurrency = props.account.type === 'custom'
+const fixedConcurrency =
+  props.account.type === 'adobe'
+    ? (props.account.plan === 'free' ? 1 : Number(props.account.concurrency) || 5)
+    : props.account.type === 'grok'
+      ? 10
+      : 1
 
 const weight = ref(Number(props.account.weight) || 0)
 const concurrency = ref(Number(props.account.concurrency) || 1)
@@ -61,7 +68,7 @@ async function submit() {
         <div>
           <label class="lbl">并发数 <span class="text-white/35">{{ canEditConcurrency ? '(单账号)' : '(系统固定,不可调整)' }}</span></label>
           <input v-if="canEditConcurrency" v-model.number="concurrency" type="number" min="1" class="field" placeholder="1" />
-          <input v-else :value="account.type === 'grok' ? 10 : 1" disabled class="field" />
+          <input v-else :value="fixedConcurrency" disabled class="field" />
         </div>
         <p v-if="status" class="text-xs" :class="isError ? 'text-rose-400' : 'text-emerald-400'">{{ status }}</p>
         <div class="flex justify-end gap-2 pt-2">

@@ -68,6 +68,7 @@ func (h *UserGenerationHandler) Generate(c *gin.Context) {
 		Resolution      string   `json:"resolution"`
 		Duration        string   `json:"duration"`
 		ReferenceImages []string `json:"reference_images"`
+		ReferenceMode   string   `json:"reference_mode"`
 		DeAI            bool     `json:"deai"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -82,6 +83,7 @@ func (h *UserGenerationHandler) Generate(c *gin.Context) {
 		Resolution:      body.Resolution,
 		Duration:        body.Duration,
 		ReferenceImages: body.ReferenceImages,
+		ReferenceMode:   body.ReferenceMode,
 		DeAI:            body.DeAI,
 	})
 	if err != nil {
@@ -345,7 +347,7 @@ func (h *UserGenerationHandler) VideoPresets(c *gin.Context) {
 				"durations":            []string{"4s", "6s", "8s"},
 				"ratios":               []string{"16:9", "9:16"},
 				"resolutions":          []string{"720p", "1080p"},
-				"max_reference_images": 2,
+				"max_reference_images": 9,
 				"reference_mode":       "frame",
 			},
 			{
@@ -356,7 +358,7 @@ func (h *UserGenerationHandler) VideoPresets(c *gin.Context) {
 				"durations":            []string{"4s", "6s", "8s"},
 				"ratios":               []string{"16:9", "9:16"},
 				"resolutions":          []string{"720p", "1080p"},
-				"max_reference_images": 2,
+				"max_reference_images": 9,
 				"reference_mode":       "frame",
 			},
 			{
@@ -369,7 +371,7 @@ func (h *UserGenerationHandler) VideoPresets(c *gin.Context) {
 				"resolutions":          []string{"720p"},
 			},
 			{
-				"key":                  "seedance-fast",
+				"key":                  "seedance-2.0-fast",
 				"label":                "Seedance 2.0 Fast",
 				"type":                 "video",
 				"provider":             "adobe",
@@ -377,7 +379,7 @@ func (h *UserGenerationHandler) VideoPresets(c *gin.Context) {
 				"ratios":               []string{"16:9", "9:16"},
 				"resolutions":          []string{"720p"},
 				"max_reference_images": 9,
-				"reference_mode":       "frame",
+				"reference_mode":       "style",
 			},
 			{
 				"key":                  "seedance-2.0",
@@ -388,7 +390,7 @@ func (h *UserGenerationHandler) VideoPresets(c *gin.Context) {
 				"ratios":               []string{"16:9", "9:16"},
 				"resolutions":          []string{"720p", "1080p"},
 				"max_reference_images": 9,
-				"reference_mode":       "frame",
+				"reference_mode":       "style",
 			},
 			{
 				"key":                  "firefly-video",
@@ -398,7 +400,7 @@ func (h *UserGenerationHandler) VideoPresets(c *gin.Context) {
 				"durations":            []string{"5s"},
 				"ratios":               []string{"16:9", "1:1", "9:16"},
 				"resolutions":          []string{"540p", "720p", "1080p"},
-				"max_reference_images": 2,
+				"max_reference_images": 9,
 				"reference_mode":       "frame",
 			},
 			{
@@ -524,7 +526,7 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"ratios":               []string{"16:9", "9:16"},
 			"resolutions":          []string{"720p", "1080p"},
 			"durations":            []string{"4s", "6s", "8s"},
-			"max_reference_images": 2,
+			"max_reference_images": 3,
 			"reference_mode":       "frame",
 			"description":          "Veo 3.1 Fast",
 		},
@@ -533,17 +535,18 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"provider":             "adobe",
 			"type":                 "video",
 			"ratios":               []string{"16:9", "9:16"},
-			"resolutions":          []string{"720p"},
+			"resolutions":          []string{"720p", "1080p"},
 			"durations":            []string{"4s", "6s", "8s"},
-			"max_reference_images": 0,
+			"max_reference_images": 3,
+			"reference_mode":       "style",
 			"description":          "Veo 3.1",
 		},
 		{
-			"id":                   "firefly-ray",
+			"id":                   "gemini-veo3.1",
 			"provider":             "adobe",
 			"type":                 "video",
-			"ratios":               []string{"21:9", "16:9", "4:3", "1:1", "3:4", "9:16", "9:21"},
-			"resolutions":          []string{"720p"},
+			"ratios":               []string{"16:9", "9:16"},
+			"resolutions":          []string{"720p", "1080p"},
 			"durations":            []string{"5s", "10s"},
 			"max_reference_images": 2,
 			"reference_mode":       "frame",
@@ -561,14 +564,14 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"description":          "Adobe Firefly Video",
 		},
 		{
-			"id":                   "seedance-fast",
+			"id":                   "seedance-2.0-fast",
 			"provider":             "adobe",
 			"type":                 "video",
 			"ratios":               []string{"16:9", "9:16"},
 			"resolutions":          []string{"720p"},
 			"durations":            []string{"4s", "5s", "6s", "7s", "8s", "9s", "10s", "11s", "12s", "13s", "14s", "15s"},
 			"max_reference_images": 9,
-			"reference_mode":       "frame",
+			"reference_mode":       "style",
 			"description":          "Seedance 2.0 Fast",
 		},
 		{
@@ -579,7 +582,7 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"resolutions":          []string{"720p", "1080p"},
 			"durations":            []string{"4s", "5s", "6s", "7s", "8s", "9s", "10s", "11s", "12s", "13s", "14s", "15s"},
 			"max_reference_images": 9,
-			"reference_mode":       "frame",
+			"reference_mode":       "style",
 			"description":          "Seedance 2.0",
 		},
 		{
@@ -763,7 +766,7 @@ func (h *UserGenerationHandler) publicModels() ([]gin.H, error) {
 			"stub":        false,
 		},
 		{
-			"id":          "seedance-fast",
+			"id":          "seedance-2.0-fast",
 			"provider":    "adobe",
 			"kind":        "video",
 			"ratios":      []string{"16:9", "9:16"},

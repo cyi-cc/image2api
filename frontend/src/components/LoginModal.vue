@@ -176,7 +176,7 @@ async function submit() {
 
           <!-- header -->
           <div class="flex flex-col items-center text-center mb-6">
-            <div class="logo-halo mb-3"><Logo :size="44" class="rounded-[13px]" /></div>
+            <div class="logo-halo mb-3"><Logo :size="44" /></div>
             <transition name="swap" mode="out-in">
               <div :key="mode">
                 <h2 class="text-lg font-semibold tracking-tight text-[color:var(--fg)]">{{ heading.title }}</h2>

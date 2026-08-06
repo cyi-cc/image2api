@@ -28,8 +28,12 @@ const (
 	fireflyVideoSubmitURL = "https://video-v1.ff.adobe.io/v2/videos/generate"
 	fireflyVideoUploadURL = "https://video-v1.ff.adobe.io/v2/storage/image"
 	uploadURL             = "https://firefly-3p.ff.adobe.io/v2/storage/image"
-	creditsURL            = "https://firefly.adobe.io/v1/credits/balance"
-	creditsAPIKey         = "SunbreakWebUI1"
+	// Seedance reference video/audio go to their own storage endpoints; posting
+	// them to /v2/storage/image is rejected.
+	uploadVideoURL = "https://firefly-3p.ff.adobe.io/v2/storage/video"
+	uploadAudioURL = "https://firefly-3p.ff.adobe.io/v2/storage/audio"
+	creditsURL     = "https://firefly.adobe.io/v1/credits/balance"
+	creditsAPIKey  = "SunbreakWebUI1"
 )
 
 var (
@@ -43,14 +47,24 @@ var (
 	// the account's — every account rejects the same content — so the caller must
 	// surface it as-is without penalizing/killing the account or failing over.
 	ErrContentRejected = errors.New("adobe content rejected")
+	// ErrNotEntitled is a 403 user_not_entitled on submit: the account has no
+	// Firefly entitlement at all. It wraps ErrAuth so existing auth handling still
+	// applies, but callers can single it out — unlike an expired access token this
+	// cannot be fixed by refreshing from the cookie, so the account is done.
+	ErrNotEntitled = fmt.Errorf("%w: user not entitled", ErrAuth)
 )
 
 // isContentRejection reports whether an Adobe response (status + body) is a
 // content-safety refusal rather than a genuine upstream/account failure. Adobe
 // returns HTTP 451 with an "*_unsafe" error_code when moderation blocks the
-// prompt or the produced image.
+// prompt or the produced image, and "reference_image_privacy_error" when a
+// reference image contains a real person's face. Both are the request's fault —
+// every account rejects them identically — so neither may penalize the account.
 func isContentRejection(status int, body string) bool {
-	return status == 451 && strings.Contains(body, "unsafe")
+	if status != 451 {
+		return false
+	}
+	return strings.Contains(body, "unsafe") || strings.Contains(body, "privacy_error")
 }
 
 var profileURLs = []string{
@@ -59,9 +73,8 @@ var profileURLs = []string{
 }
 
 type Client struct {
-	apiKey       string
-	proxy        string
-	arpSessionID string // cached per-client, reused across requests (matches adobe2api)
+	apiKey string
+	proxy  string
 }
 
 func NewClient(apiKey, proxy string) *Client {
@@ -71,16 +84,11 @@ func NewClient(apiKey, proxy string) *Client {
 	}
 }
 
-// getARPSessionID returns a cached ARP session id matching adobe2api's format:
-// base64({"sid":"<uuid>","ftr":"<hex16>_<ts_ms>_<pid>_dUAL43-mnts-ants-d4_31ck__tt"})
-// Generated once per client and reused — adobe2api reuses the same session id per
-// token/profile instead of rotating every request.
-func (c *Client) getARPSessionID() string {
-	if c.arpSessionID != "" {
-		return c.arpSessionID
-	}
-	c.arpSessionID = buildARPSessionID()
-	return c.arpSessionID
+// getARPSessionID returns a fresh ARP session id for this token. The value is
+// regenerated per call, but the embedded pid stays stable per token; see
+// buildARPSessionID for the wire format.
+func (c *Client) getARPSessionID(token string) string {
+	return buildARPSessionID(token)
 }
 
 func (c *Client) SetProxy(proxy string) {
@@ -116,19 +124,36 @@ func (c *Client) UploadImage(ctx context.Context, token string, content []byte, 
 
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return "", err
+		return "", fmt.Errorf("adobe upload bad response: %w (%s)", err, clip(body, 300))
 	}
-	if images, ok := payload["images"].([]any); ok && len(images) > 0 {
-		if first, ok := images[0].(map[string]any); ok {
-			if id := strings.TrimSpace(stringValue(first["id"])); id != "" {
-				return id, nil
-			}
-		}
-	}
-	if id := strings.TrimSpace(stringValue(payload["id"])); id != "" {
+	if id := blobIDFromUploadPayload(payload); id != "" {
 		return id, nil
 	}
-	return "", errors.New("adobe upload missing blob id")
+	return "", fmt.Errorf("adobe upload missing blob id: %s", clip(body, 300))
+}
+
+// blobIDFromUploadPayload digs the blob id out of a storage response. The image
+// endpoint answers {"images":[{"id":...}]}, video/audio use their own key
+// ("videos"/"audios"/"assets"/"files"), and some responses put the id at the top
+// level — accept any of them instead of only "images".
+func blobIDFromUploadPayload(payload map[string]any) string {
+	if id := strings.TrimSpace(stringValue(payload["id"])); id != "" {
+		return id
+	}
+	for _, key := range []string{"images", "videos", "audios", "audio", "assets", "files"} {
+		items, ok := payload[key].([]any)
+		if !ok || len(items) == 0 {
+			continue
+		}
+		first, ok := items[0].(map[string]any)
+		if !ok {
+			continue
+		}
+		if id := strings.TrimSpace(stringValue(first["id"])); id != "" {
+			return id
+		}
+	}
+	return ""
 }
 
 // uploadImageOnce performs a single upload attempt and returns the raw response
@@ -141,8 +166,19 @@ func (c *Client) uploadImageOnce(ctx context.Context, token string, content []by
 	}
 
 	endpoint := uploadURL
-	if engine == "firefly-video" {
+	switch {
+	case engine == "firefly-video":
 		endpoint = fireflyVideoUploadURL
+	case strings.HasPrefix(contentType, "video/"):
+		endpoint = uploadVideoURL
+	case strings.HasPrefix(contentType, "audio/"):
+		endpoint = uploadAudioURL
+	}
+	// Seedance is a Firefly-native model: its uploads need the clio-playground-web
+	// key, the express key is rejected with 403 access_error.
+	apiKey := c.apiKey
+	if strings.HasPrefix(engine, "seedance-") {
+		apiKey = clioClientID
 	}
 	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(content))
 	if err != nil {
@@ -151,7 +187,7 @@ func (c *Client) uploadImageOnce(ctx context.Context, token string, content []by
 	req = req.WithContext(ctx)
 	req.Header = http.Header{
 		"authorization": {"Bearer " + strings.TrimSpace(token)},
-		"x-api-key":     {c.apiKey},
+		"x-api-key":     {apiKey},
 		"content-type":  {defaultString(contentType, "image/png")},
 		"accept":        {"*/*"},
 		"user-agent":    {sess.fp.userAgent},
@@ -233,24 +269,36 @@ func (c *Client) GenerateImage(ctx context.Context, token, modelID, prompt, aspe
 	// Content-safety refusal: the prompt/image is blocked, retrying other payloads
 	// or accounts is pointless — surface it as-is so the pool doesn't fail over.
 	if errors.Is(lastErr, ErrContentRejected) {
-		return nil, nil, fmt.Errorf("%w: adobe submit: %s", ErrContentRejected, clip(lastBody, 300))
+		return nil, nil, fmt.Errorf("%w: adobe submit: %s", ErrContentRejected, submitDetail(lastErr, lastBody))
 	}
 	// Preserve the temporary classification so the pool retries (overload / 5xx /
 	// rate-limit) instead of failing the request outright.
 	if errors.Is(lastErr, ErrDeadUpstream) {
-		return nil, nil, fmt.Errorf("%w: adobe submit: %s", ErrDeadUpstream, clip(lastBody, 300))
+		return nil, nil, fmt.Errorf("%w: adobe submit: %s", ErrDeadUpstream, submitDetail(lastErr, lastBody))
 	}
 	if errors.Is(lastErr, ErrTemporaryUpstream) {
-		return nil, nil, fmt.Errorf("%w: adobe submit: %s", ErrTemporaryUpstream, clip(lastBody, 300))
+		return nil, nil, fmt.Errorf("%w: adobe submit: %s", ErrTemporaryUpstream, submitDetail(lastErr, lastBody))
 	}
-	return nil, nil, fmt.Errorf("adobe submit failed: %s", clip(lastBody, 300))
+	return nil, nil, fmt.Errorf("adobe submit failed: %s", submitDetail(lastErr, lastBody))
+}
+
+// submitDetail 拼接上游细节：优先用响应体，响应体为空时（传输层报错，例如超时、
+// 连接被切）退回内层错误文本，避免错误只剩一句 "adobe submit:" 无从排查。
+func submitDetail(err error, body []byte) string {
+	if s := clip(body, 300); strings.TrimSpace(s) != "" {
+		return s
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return "(empty response)"
 }
 
 // GenerateVideo renders the clip and (when downloadResult) downloads the MP4.
 // With downloadResult=false it returns nil bytes and the upstream presigned URL
 // in meta["video_url"] — used by the async /v1/videos job, which proxies that URL
 // on /content instead of persisting the file.
-func (c *Client) GenerateVideo(ctx context.Context, token, engine, prompt, aspectRatio string, durationSeconds int, resolution, referenceMode, upstreamModel string, blobIDs []string, downloadResult bool) ([]byte, map[string]any, error) {
+func (c *Client) GenerateVideo(ctx context.Context, token, engine, prompt, aspectRatio string, durationSeconds int, resolution, referenceMode, upstreamModel string, blobIDs, videoBlobIDs, audioBlobIDs []string, downloadResult bool) ([]byte, map[string]any, error) {
 	// Only the submit goes through the proxy; polling + download run on the local IP.
 	submitSess, err := c.newTLSClient()
 	if err != nil {
@@ -261,7 +309,7 @@ func (c *Client) GenerateVideo(ctx context.Context, token, engine, prompt, aspec
 		return nil, nil, err
 	}
 
-	payload := BuildVideoPayload(engine, prompt, aspectRatio, durationSeconds, resolution, referenceMode, upstreamModel, blobIDs)
+	payload := BuildVideoPayload(engine, prompt, aspectRatio, durationSeconds, resolution, referenceMode, upstreamModel, blobIDs, videoBlobIDs, audioBlobIDs)
 	endpoint := videoSubmitURL
 	if engine == "firefly-video" {
 		endpoint = fireflyVideoSubmitURL
@@ -368,7 +416,7 @@ func (c *Client) FetchCreditsBalance(ctx context.Context, token string) (map[str
 		}, nil
 	}
 
-	sess, err := c.newDirectTLSClient()
+	sess, err := c.newTLSClient()
 	if err != nil {
 		return nil, err
 	}
@@ -444,6 +492,7 @@ func (c *Client) FetchCreditsBalance(ctx context.Context, token string) (map[str
 		"used":            intOrNil(quota["used"]),
 		"total":           intOrNil(quota["total"]),
 		"available_until": emptyStringNil(strings.TrimSpace(stringValue(totalInfo["availableUntil"]))),
+		"plan":            strings.TrimSpace(stringValue(totalInfo["planCap"])),
 		"unknown":         false,
 		"error":           nil,
 	}, nil
@@ -462,6 +511,7 @@ func (c *Client) submitImage(ctx context.Context, sess *tlsSession, token, promp
 	req.Header = http.Header{
 		"authorization":      {"Bearer " + strings.TrimSpace(token)},
 		"x-api-key":          {c.apiKey},
+		"x-arp-session-id":   {c.getARPSessionID(token)},
 		"content-type":       {"application/json"},
 		"accept":             {"*/*"},
 		"origin":             {"https://new.express.adobe.com"},
@@ -477,6 +527,7 @@ func (c *Client) submitImage(ctx context.Context, sess *tlsSession, token, promp
 		http.HeaderOrderKey: {
 			"authorization",
 			"x-api-key",
+			"x-arp-session-id",
 			"content-type",
 			"accept",
 			"origin",
@@ -506,10 +557,14 @@ func (c *Client) submitImage(ctx context.Context, sess *tlsSession, token, promp
 		return nil, "", err
 	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		if strings.EqualFold(resp.Header.Get("x-access-error"), "taste_exhausted") {
+		accessErr := resp.Header.Get("x-access-error")
+		if strings.EqualFold(accessErr, "taste_exhausted") {
 			return respBody, "", ErrQuotaExhausted
 		}
-		return respBody, "", fmt.Errorf("%w (submit %d %s: %s)", ErrAuth, resp.StatusCode, resp.Header.Get("x-access-error"), clip(respBody, 300))
+		if strings.EqualFold(accessErr, "user_not_entitled") {
+			return respBody, "", fmt.Errorf("%w (submit %d %s: %s)", ErrNotEntitled, resp.StatusCode, accessErr, clip(respBody, 300))
+		}
+		return respBody, "", fmt.Errorf("%w (submit %d %s: %s)", ErrAuth, resp.StatusCode, accessErr, clip(respBody, 300))
 	}
 	// "system under load" / timeout_error = adobe rate-limit/overload (can come on a
 	// non-5xx) — treat as temporary so the pool retries instead of failing.
@@ -520,10 +575,10 @@ func (c *Client) submitImage(ctx context.Context, sess *tlsSession, token, promp
 		return respBody, "", ErrContentRejected
 	}
 	if resp.StatusCode == 429 || resp.StatusCode == 451 || resp.StatusCode >= 500 {
-		return respBody, "", ErrDeadUpstream
+		return respBody, "", fmt.Errorf("%w (submit %d: %s)", ErrDeadUpstream, resp.StatusCode, clip(respBody, 300))
 	}
 	if resp.StatusCode != 200 {
-		return respBody, "", errors.New("submit rejected")
+		return respBody, "", fmt.Errorf("submit rejected: %d %s", resp.StatusCode, clip(respBody, 300))
 	}
 
 	var payloadResp map[string]any
@@ -588,7 +643,7 @@ func (c *Client) pollImage(ctx context.Context, sess *tlsSession, token, pollURL
 			return nil, nil, fmt.Errorf("%w: %s", ErrContentRejected, clip(body, 300))
 		}
 		if resp.StatusCode == 429 || resp.StatusCode == 451 || resp.StatusCode >= 500 {
-			return nil, nil, ErrDeadUpstream
+			return nil, nil, fmt.Errorf("%w (poll %d: %s)", ErrDeadUpstream, resp.StatusCode, clip(body, 300))
 		}
 		if resp.StatusCode != 200 {
 			return nil, nil, fmt.Errorf("adobe poll failed: %d %s", resp.StatusCode, clip(body, 300))
@@ -635,13 +690,23 @@ func (c *Client) submitVideo(ctx context.Context, sess *tlsSession, token, endpo
 		return nil, "", err
 	}
 	req = req.WithContext(ctx)
+	// Seedance is a Firefly-native model and needs the clio-playground-web key;
+	// the express key is rejected with 403 access_error. The origin stays on the
+	// Express surface for every engine — the upstream only gates on the key and
+	// x-arp-session-id, not on origin.
+	apiKey := c.apiKey
+	origin := "https://new.express.adobe.com"
+	if strings.EqualFold(stringValue(payload["modelId"]), "seedance") {
+		apiKey = clioClientID
+	}
 	req.Header = http.Header{
 		"authorization":      {"Bearer " + strings.TrimSpace(token)},
-		"x-api-key":          {c.apiKey},
+		"x-api-key":          {apiKey},
+		"x-arp-session-id":   {c.getARPSessionID(token)},
 		"content-type":       {"application/json"},
 		"accept":             {"*/*"},
-		"origin":             {"https://new.express.adobe.com"},
-		"referer":            {"https://new.express.adobe.com/"},
+		"origin":             {origin},
+		"referer":            {origin + "/"},
 		"accept-language":    {"en-US,en;q=0.9"},
 		"sec-ch-ua":          {sess.fp.secCHUA},
 		"sec-ch-ua-mobile":   {"?0"},
@@ -653,6 +718,7 @@ func (c *Client) submitVideo(ctx context.Context, sess *tlsSession, token, endpo
 		http.HeaderOrderKey: {
 			"authorization",
 			"x-api-key",
+			"x-arp-session-id",
 			"content-type",
 			"accept",
 			"origin",
@@ -686,18 +752,22 @@ func (c *Client) submitVideo(ctx context.Context, sess *tlsSession, token, endpo
 		return nil, "", err
 	}
 	if resp.StatusCode == 401 || resp.StatusCode == 403 {
-		if strings.EqualFold(resp.Header.Get("x-access-error"), "taste_exhausted") {
+		accessErr := resp.Header.Get("x-access-error")
+		if strings.EqualFold(accessErr, "taste_exhausted") {
 			return respBody, "", ErrQuotaExhausted
+		}
+		if strings.EqualFold(accessErr, "user_not_entitled") {
+			return respBody, "", fmt.Errorf("%w (%d %s: %s)", ErrNotEntitled, resp.StatusCode, accessErr, clip(respBody, 300))
 		}
 		// Surface Adobe's response body — "adobe auth failed" alone hides whether
 		// it's a bad token, a missing scope, or a WAF/fingerprint block.
-		return respBody, "", fmt.Errorf("%w (%d %s: %s)", ErrAuth, resp.StatusCode, resp.Header.Get("x-access-error"), clip(respBody, 300))
+		return respBody, "", fmt.Errorf("%w (%d %s: %s)", ErrAuth, resp.StatusCode, accessErr, clip(respBody, 300))
 	}
 	if isContentRejection(resp.StatusCode, string(respBody)) {
 		return respBody, "", ErrContentRejected
 	}
 	if resp.StatusCode == 408 || resp.StatusCode == 429 || resp.StatusCode == 451 || resp.StatusCode >= 500 {
-		return respBody, "", ErrDeadUpstream
+		return respBody, "", fmt.Errorf("%w (video submit %d: %s)", ErrDeadUpstream, resp.StatusCode, clip(respBody, 300))
 	}
 	// "system under load" / timeout_error = adobe overload — treat as a temporary
 	// error so the tempFailover policy moves to the next account (same as the image path).
@@ -773,7 +843,7 @@ func (c *Client) pollVideo(ctx context.Context, sess *tlsSession, token, pollURL
 			return nil, nil, fmt.Errorf("%w: %s", ErrContentRejected, clip(body, 300))
 		}
 		if resp.StatusCode == 429 || resp.StatusCode == 451 || resp.StatusCode >= 500 {
-			return nil, nil, ErrDeadUpstream
+			return nil, nil, fmt.Errorf("%w (video poll %d: %s)", ErrDeadUpstream, resp.StatusCode, clip(body, 300))
 		}
 		if resp.StatusCode != 200 {
 			return nil, nil, fmt.Errorf("adobe video poll failed: %d %s", resp.StatusCode, clip(body, 300))
@@ -889,7 +959,12 @@ const (
 	osMac
 )
 
-func newChromeFingerprint(profile profiles.ClientProfile, major, osKind int) fingerprint {
+// newChromeFingerprint pairs a TLS ClientProfile with headers for the same
+// Chrome major. secCHUA is passed in verbatim rather than templated: the GREASE
+// brand entry ("Not(A:Brand", "Not_A Brand", …), its version, and its position
+// in the list all rotate per Chrome release, so there is no formula to derive
+// it from the major.
+func newChromeFingerprint(profile profiles.ClientProfile, major, osKind int, secCHUA string) fingerprint {
 	ua := fmt.Sprintf("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%d.0.0.0 Safari/537.36", major)
 	platform := `"Windows"`
 	if osKind == osMac {
@@ -899,7 +974,7 @@ func newChromeFingerprint(profile profiles.ClientProfile, major, osKind int) fin
 	return fingerprint{
 		profile:   profile,
 		userAgent: ua,
-		secCHUA:   fmt.Sprintf(`"Not?A_Brand";v="99", "Google Chrome";v="%d", "Chromium";v="%d"`, major, major),
+		secCHUA:   secCHUA,
 		platform:  platform,
 	}
 }
@@ -908,12 +983,21 @@ func newChromeFingerprint(profile profiles.ClientProfile, major, osKind int) fin
 // Windows/macOS. Each request draws one at random so the outbound TLS
 // fingerprint and headers vary from call to call instead of presenting a single
 // static signature to Adobe's anti-bot layer.
+//
+// The majors here are capped by what tls-client ships a TLS profile for
+// (Chrome_146 is the newest in v1.15.1). Live Adobe traffic is on Chromium
+// 150+, so the UA is deliberately NOT set higher than the pool: advertising a
+// newer UA than the JA3/JA4 handshake backs up is a sharper signal than being a
+// few releases behind. tls-client has no Edge profile at any version, so the
+// pool stays pure Chrome rather than pairing an Edge UA with a Chrome
+// handshake.
 var adobeFingerprints = []fingerprint{
-	newChromeFingerprint(profiles.Chrome_133, 133, osWindows),
-	newChromeFingerprint(profiles.Chrome_131, 131, osWindows),
-	newChromeFingerprint(profiles.Chrome_124, 124, osWindows),
-	newChromeFingerprint(profiles.Chrome_133, 133, osMac),
-	newChromeFingerprint(profiles.Chrome_131, 131, osMac),
+	newChromeFingerprint(profiles.Chrome_146, 146, osWindows, `"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="24"`),
+	newChromeFingerprint(profiles.Chrome_146, 146, osMac, `"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="24"`),
+	newChromeFingerprint(profiles.Chrome_144, 144, osWindows, `"Chromium";v="144", "Google Chrome";v="144", "Not?A_Brand";v="24"`),
+	newChromeFingerprint(profiles.Chrome_144, 144, osMac, `"Chromium";v="144", "Google Chrome";v="144", "Not?A_Brand";v="24"`),
+	newChromeFingerprint(profiles.Chrome_133, 133, osWindows, `"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"`),
+	newChromeFingerprint(profiles.Chrome_131, 131, osMac, `"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"`),
 }
 
 func randomFingerprint() fingerprint {
@@ -962,14 +1046,41 @@ func exchangeCookieWithTLSClient(ctx context.Context, sess *tlsSession, cookie s
 		return nil, ErrAdobeCookieEmpty
 	}
 
-	// Prefer user_id (HAR behavior); fall back to guest_allowed for first-time login.
-	userID := extractUserIDFromCookie(cookie)
-	var body string
-	if userID != "" {
-		body = "client_id=" + clientID + "&scope=" + strings.ReplaceAll(scopeValue, ",", "%2C") + "&user_id=" + url.QueryEscape(userID)
-	} else {
-		body = "client_id=" + clientID + "&guest_allowed=true&scope=" + strings.ReplaceAll(scopeValue, ",", "%2C")
+	body := "client_id=" + clientID + "&guest_allowed=true&scope=" + strings.ReplaceAll(scopeValue, ",", "%2C")
+	payload, err := doCookieExchange(ctx, sess, cookie, body, "https://new.express.adobe.com")
+	if err != nil {
+		return nil, err
 	}
+	token := strings.TrimSpace(stringValue(payload["access_token"]))
+	if token == "" {
+		return nil, errors.New("adobe cookie exchange missing access_token")
+	}
+	// The Express token (projectx_webapp) covers image/veo/luma/sora but is not
+	// entitled to the Firefly-native seedance models — those return 403
+	// model_not_authorized. firefly.adobe.com mints a second token for
+	// client_id=clio-playground-web with the creative_production scope, keyed by
+	// user_id, which IS entitled. Mint that here too (best-effort: if it fails we
+	// keep the Express token so the other models still work).
+	if uid := ExtractAccountID(token); uid != "" {
+		clioBody := "client_id=" + clioClientID + "&scope=" + strings.ReplaceAll(clioScopeValue, ",", "%2C") + "&user_id=" + url.QueryEscape(uid)
+		if clioPayload, err := doCookieExchange(ctx, sess, cookie, clioBody, "https://firefly.adobe.com"); err == nil {
+			if clioToken := strings.TrimSpace(stringValue(clioPayload["access_token"])); clioToken != "" {
+				return &CookieExchangeResult{
+					AccessToken: clioToken,
+					ExpiresIn:   intValue(clioPayload["expires_in"]),
+					Raw:         clioPayload,
+				}, nil
+			}
+		}
+	}
+	return &CookieExchangeResult{
+		AccessToken: token,
+		ExpiresIn:   intValue(payload["expires_in"]),
+		Raw:         payload,
+	}, nil
+}
+
+func doCookieExchange(ctx context.Context, sess *tlsSession, cookie, body, origin string) (map[string]any, error) {
 	req, err := http.NewRequest(http.MethodPost, refreshURL, strings.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -977,20 +1088,15 @@ func exchangeCookieWithTLSClient(ctx context.Context, sess *tlsSession, cookie s
 	req = req.WithContext(ctx)
 	req.Header = http.Header{
 		"accept":          {"*/*"},
-		"accept-language": {"zh-CN,zh;q=0.9"},
+		"accept-language": {"en-US,en;q=0.9"},
 		"content-type":    {"application/x-www-form-urlencoded;charset=UTF-8"},
 		"cookie":          {cookie},
-		"origin":          {"https://new.express.adobe.com"},
-		"referer":         {"https://new.express.adobe.com/"},
+		"origin":          {origin},
+		"referer":         {origin + "/"},
 		"user-agent":      {sess.fp.userAgent},
 		http.HeaderOrderKey: {
-			"accept",
-			"accept-language",
-			"content-type",
-			"cookie",
-			"origin",
-			"referer",
-			"user-agent",
+			"accept", "accept-language", "content-type", "cookie",
+			"origin", "referer", "user-agent",
 		},
 	}
 	resp, err := sess.client.Do(req)
@@ -1010,15 +1116,7 @@ func exchangeCookieWithTLSClient(ctx context.Context, sess *tlsSession, cookie s
 	if err := json.Unmarshal(respBody, &payload); err != nil {
 		return nil, fmt.Errorf("adobe cookie exchange invalid json: %w", err)
 	}
-	token := strings.TrimSpace(stringValue(payload["access_token"]))
-	if token == "" {
-		return nil, errors.New("adobe cookie exchange missing access_token")
-	}
-	return &CookieExchangeResult{
-		AccessToken: token,
-		ExpiresIn:   intValue(payload["expires_in"]),
-		Raw:         payload,
-	}, nil
+	return payload, nil
 }
 
 func buildSubmitNonce(token, prompt string) string {
