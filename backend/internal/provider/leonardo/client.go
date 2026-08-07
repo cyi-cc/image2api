@@ -46,7 +46,7 @@ var (
 	ErrTemporaryUpstream = errors.New("leonardo upstream temporary error")
 )
 
-// AuthError preserves the safe, actionable part of a get-session failure while
+// AuthError preserves the safe, actionable part of an authentication failure while
 // still matching ErrAuth through errors.Is. It never includes Cookie or bearer
 // values, so callers can persist Error() for the admin abnormal-reason column.
 type AuthError struct {
@@ -157,18 +157,35 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 	return sess, nil
 }
 
-// RefreshCookie force-calls get-session even when the ~1h bearer is cached. That
-// request is the Better Auth keepalive: once its update-age is reached, Leonardo
-// extends the durable server-side session and can reissue session_token and/or
-// session_data cookies. changed only describes whether the raw Cookie header
+// PollSession mirrors the Leonardo web app's periodic GET /api/auth/get-session.
+// It deliberately keeps Better Auth's cookie cache enabled: this is the normal,
+// low-cost five-minute keepalive path. Replacement session cookies are returned
+// to the caller so they can be persisted.
+func (c *Client) PollSession(ctx context.Context, cookie string) (fresh string, changed bool, err error) {
+	return c.exchangeCookie(ctx, cookie, false)
+}
+
+// RefreshCookie force-calls get-session with Better Auth's supported cache
+// bypass. Use it to recover from an expired/rejected GraphQL bearer, not for the
+// regular polling loop. changed only describes whether the raw Cookie header
 // changed; a successful unchanged result still renewed/validated the server-side
-// session and must count as a successful keepalive.
+// session and must count as a successful refresh.
 func (c *Client) RefreshCookie(ctx context.Context, cookie string) (fresh string, changed bool, err error) {
+	return c.exchangeCookie(ctx, cookie, true)
+}
+
+func (c *Client) exchangeCookie(ctx context.Context, cookie string, forceFresh bool) (fresh string, changed bool, err error) {
 	cookie = strings.TrimSpace(cookie)
 	if cookie == "" {
 		return "", false, ErrAuth
 	}
-	sess, setCookies, err := c.fetchFreshSession(ctx, cookie)
+	var sess *Session
+	var setCookies []*http.Cookie
+	if forceFresh {
+		sess, setCookies, err = c.fetchFreshSession(ctx, cookie)
+	} else {
+		sess, setCookies, err = c.fetchSession(ctx, cookie, false)
+	}
 	if err != nil {
 		return "", false, err
 	}
@@ -186,8 +203,8 @@ type freshSessionResult struct {
 }
 
 // fetchFreshSession coalesces every forced get-session request by the durable
-// session_token. Scheduled keepalive, bearer-expiry renewal and GraphQL auth
-// retry can therefore overlap without multiplying Leonardo's rate-limited auth
+// session_token. Bearer-expiry renewal and concurrent GraphQL auth retries can
+// therefore overlap without multiplying Leonardo's rate-limited auth
 // calls. Each waiter keeps its own cancellation semantics, while the one shared
 // upstream call is allowed to finish for the other waiters.
 func (c *Client) fetchFreshSession(ctx context.Context, cookie string) (*Session, []*http.Cookie, error) {
@@ -517,7 +534,10 @@ func (c *Client) FetchCreditsBalance(ctx context.Context, cookie string) (map[st
 		return unknownBalance("network: " + err.Error()), nil
 	}
 	if status == 401 || status == 403 {
-		return nil, ErrAuth
+		return nil, &AuthError{
+			Code:   fmt.Sprintf("graphql_quota_http_%d", status),
+			Detail: fmt.Sprintf("GraphQL 额度查询返回 HTTP %d，access token 被拒绝", status),
+		}
 	}
 	if status != 200 {
 		return unknownBalance(fmt.Sprintf("http %d: %s", status, clip(body, 160))), nil

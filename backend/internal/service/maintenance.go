@@ -146,7 +146,7 @@ func (m *MaintenanceService) tick(ctx context.Context) {
 		}
 	}
 
-	// 1c. Keep Leonardo's sliding Better Auth session alive every 40-50 minutes, and
+	// 1c. Poll Leonardo get-session every five minutes like the web app, and
 	//     proactively renew krea/imagine sessions ~10min before expiry. Per-account
 	//     due markers keep the one-minute sweep from repeatedly hitting upstream.
 	if m.tokenSvc != nil {

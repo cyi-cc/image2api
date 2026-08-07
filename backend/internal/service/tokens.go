@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	rand "math/rand/v2"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -103,14 +102,11 @@ func (s *TokenService) applyProxy(ctx context.Context) {
 }
 
 const (
-	// Leonardo does not expose the Better Auth server-side expiry in get-session.
-	// Some observed accounts stop authenticating after roughly one idle hour, so
-	// schedule each successful renewal around 45 minutes with ±5 minutes of jitter.
-	// Persisting next_at prevents restarts or one-minute sweeps from re-randomizing
-	// the deadline. Transient failures retry after 15 minutes.
-	leonardoKeepaliveBase   = 45 * time.Minute
-	leonardoKeepaliveJitter = 5 * time.Minute
-	leonardoKeepaliveRetry  = 15 * time.Minute
+	// Match the Leonardo web app's session polling cadence: call Better Auth's
+	// get-session once per account every five minutes. Besides keeping the sliding
+	// browser session active, this refreshes the short-lived bearer before the
+	// GraphQL quota/generation calls can see an expired cached access token.
+	leonardoKeepaliveInterval = 5 * time.Minute
 )
 
 // RefreshExpiringTokens proactively renews Leonardo/Krea/Imagine sessions. For
@@ -134,7 +130,7 @@ func (s *TokenService) RefreshExpiringTokens(ctx context.Context) {
 			if s.leonardo == nil || !leonardoRefreshDue(it.Meta, time.Now()) {
 				continue
 			}
-			if _, rerr := leonardoRefreshAndPersist(ctx, s.leonardo, s.tokens, it.ID, it.Value); rerr != nil && errors.Is(rerr, leonardo.ErrAuth) {
+			if _, rerr := leonardoPollAndPersist(ctx, s.leonardo, s.tokens, it.ID, it.Value); rerr != nil && errors.Is(rerr, leonardo.ErrAuth) {
 				_, _ = s.tokens.Update(ctx, "leonardo", it.ID, abnormalPatch("Leonardo 定时保活失败", rerr))
 			}
 		case "krea":
@@ -157,30 +153,52 @@ func (s *TokenService) RefreshExpiringTokens(ctx context.Context) {
 
 func leonardoRefreshDue(meta datatypes.JSONMap, now time.Time) bool {
 	nowUnix := now.Unix()
-	if attemptedAt, ok := jsonMapInt(meta, "session_refresh_attempted_at"); ok && attemptedAt > 0 && nowUnix-int64(attemptedAt) < int64(leonardoKeepaliveRetry.Seconds()) {
+	// A failed call is retried on the same five-minute cadence. This also prevents
+	// the one-minute maintenance sweep from hammering Leonardo after a failure.
+	if attemptedAt, ok := jsonMapInt(meta, "session_refresh_attempted_at"); ok && attemptedAt > 0 && nowUnix-int64(attemptedAt) < int64(leonardoKeepaliveInterval.Seconds()) {
 		return false
 	}
 	if nextAt, ok := jsonMapInt(meta, "session_refresh_next_at"); ok && nextAt > 0 {
+		// Upgrade old 40-50 minute schedules without a database migration. A marker
+		// farther away than the new interval cannot have been produced by this
+		// version; once the five-minute attempted-at throttle clears, poll now.
+		if int64(nextAt) > nowUnix+int64(leonardoKeepaliveInterval.Seconds()) {
+			return true
+		}
 		return nowUnix >= int64(nextAt)
 	}
-	// Accounts created before next_at was introduced renew once immediately; that
-	// successful call persists their first randomized deadline.
+	// Accounts created before next_at was introduced renew once immediately.
 	return true
 }
 
 func leonardoNextRefreshAt(now time.Time) time.Time {
-	jitterSeconds := int64(leonardoKeepaliveJitter / time.Second)
-	offset := rand.Int64N(jitterSeconds*2+1) - jitterSeconds
-	return now.Add(leonardoKeepaliveBase + time.Duration(offset)*time.Second)
+	return now.Add(leonardoKeepaliveInterval)
 }
 
-// refreshLeonardoAndPersist performs a forced Better Auth keepalive and records
-// its schedule markers. Updating the raw cookie is best-effort atomic with the
-// success marker in one repository write, so a replacement session token is not
-// forgotten while the account is considered refreshed.
+// leonardoPollAndPersist mirrors the web app's normal periodic get-session call.
+func leonardoPollAndPersist(ctx context.Context, client *leonardo.Client, tokens *repo.TokenRepository, tokenID, cookie string) (string, error) {
+	return leonardoSessionAndPersist(ctx, client, tokens, tokenID, cookie, false)
+}
+
+// leonardoRefreshAndPersist forces Better Auth's cookie-cache bypass. It is used
+// only after a short-lived GraphQL bearer is rejected and at import-time recovery.
 func leonardoRefreshAndPersist(ctx context.Context, client *leonardo.Client, tokens *repo.TokenRepository, tokenID, cookie string) (string, error) {
+	return leonardoSessionAndPersist(ctx, client, tokens, tokenID, cookie, true)
+}
+
+// leonardoSessionAndPersist records schedule markers and applies replacement
+// Better Auth cookies in the same repository update as the success marker, so a
+// rotated session token is never forgotten while the account is marked fresh.
+func leonardoSessionAndPersist(ctx context.Context, client *leonardo.Client, tokens *repo.TokenRepository, tokenID, cookie string, forceFresh bool) (string, error) {
 	now := time.Now()
-	fresh, changed, err := client.RefreshCookie(ctx, cookie)
+	var fresh string
+	var changed bool
+	var err error
+	if forceFresh {
+		fresh, changed, err = client.RefreshCookie(ctx, cookie)
+	} else {
+		fresh, changed, err = client.PollSession(ctx, cookie)
+	}
 	item, getErr := tokens.Get(ctx, "leonardo", tokenID)
 	if getErr != nil {
 		return "", getErr
@@ -1516,10 +1534,29 @@ func (s *TokenService) Quota(ctx context.Context, pool, id string) (map[string]a
 	}
 	if poolToType(item.Pool) == "leonardo" && s.leonardo != nil {
 		s.applyProxy(ctx)
-		data, err := s.leonardo.FetchCreditsBalance(ctx, item.Value)
+		cookie := item.Value
+		data, err := s.leonardo.FetchCreditsBalance(ctx, cookie)
+		if errors.Is(err, leonardo.ErrAuth) {
+			// The GraphQL bearer is short-lived. A 401/403 here is not enough to
+			// declare the durable Better Auth cookie dead: force get-session, persist
+			// any rotated cookies, then retry the quota query once with the new JWT.
+			fresh, refreshErr := leonardoRefreshAndPersist(ctx, s.leonardo, s.tokens, item.ID, cookie)
+			if refreshErr == nil {
+				cookie = fresh
+				// Refresh persisted five-minute scheduling markers and possibly a
+				// rotated cookie. Reload before the quota patch so writing Meta below
+				// cannot overwrite those newer session fields with this stale row.
+				if refreshedItem, getErr := s.tokens.Get(ctx, "leonardo", item.ID); getErr == nil {
+					item = refreshedItem
+				}
+				data, err = s.leonardo.FetchCreditsBalance(ctx, cookie)
+			} else {
+				err = refreshErr
+			}
+		}
 		if err != nil {
 			if errors.Is(err, leonardo.ErrAuth) {
-				fatal := abnormalPatch("Leonardo 额度查询认证失败", err)
+				fatal := abnormalPatch("Leonardo 额度查询认证失败（get-session 刷新后仍失败）", err)
 				fatal["fails"] = gorm.Expr("fails + 1")
 				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, fatal)
 			}

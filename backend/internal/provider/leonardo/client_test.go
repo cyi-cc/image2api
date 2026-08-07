@@ -126,6 +126,22 @@ func TestSessionEndpointUsesSupportedCacheBypass(t *testing.T) {
 	}
 }
 
+func TestPollSessionUsesNormalGetSession(t *testing.T) {
+	client := NewClient("")
+	var gotForceFresh bool
+	client.fetchSessionHook = func(_ context.Context, _ string, forceFresh bool) (*Session, []*http.Cookie, error) {
+		gotForceFresh = forceFresh
+		return &Session{AccessToken: "access", ExpiresAt: time.Now().Add(time.Hour).Unix()}, nil, nil
+	}
+
+	if _, _, err := client.PollSession(context.Background(), "__Secure-better-auth.session_token=account"); err != nil {
+		t.Fatalf("PollSession() error = %v", err)
+	}
+	if gotForceFresh {
+		t.Fatal("PollSession() bypassed the Better Auth cookie cache; normal five-minute polling must use /get-session")
+	}
+}
+
 func TestAuthSessionCookiesDropsBrowserBoundFingerprintState(t *testing.T) {
 	cookie := "__cf_bm=browser-bound; CF_Access_Token=edge-bound; __Secure-better-auth.session_token=durable; analytics=ignored; __Secure-better-auth.session_data.0=cache0; __Secure-better-auth.session_data.1=cache1"
 	want := "__Secure-better-auth.session_token=durable; __Secure-better-auth.session_data.0=cache0; __Secure-better-auth.session_data.1=cache1"
