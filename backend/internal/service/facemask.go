@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"image/color"
 	"image/draw"
 	"image/png"
 	"math"
@@ -241,7 +240,7 @@ func rectIoU(a, b image.Rectangle) float64 {
 	return interArea / (float64(a.Dx()*a.Dy()+b.Dx()*b.Dy()) - interArea)
 }
 
-// applyFaceNotice 给图中每张人脸盖一层红色网格点，返回 PNG。
+// applyFaceNotice 给图中每张人脸盖一层黑丝网眼，返回 PNG。
 // 没检出人脸（或不是可解码的图片）时返回 ErrNoFaceDetected，调用方应继续用原图；
 // 其它错误说明检测器不可用，调用方不应把未打码的图上传。
 func applyFaceNotice(b []byte) ([]byte, error) {
@@ -258,60 +257,15 @@ func applyFaceNotice(b []byte) ([]byte, error) {
 	}
 
 	w, h := src.Bounds().Dx(), src.Bounds().Dy()
-	orig := image.NewRGBA(image.Rect(0, 0, w, h))
-	draw.Draw(orig, orig.Bounds(), src, src.Bounds().Min, draw.Src)
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	draw.Draw(dst, dst.Bounds(), src, src.Bounds().Min, draw.Src)
 
 	offset := image.Pt(-src.Bounds().Min.X, -src.Bounds().Min.Y)
-
-	// 脸多（>4 张）时不做顶部条，直接给每张脸盖一层白点阵。
-	if len(boxes) > 4 {
-		dst := image.NewRGBA(image.Rect(0, 0, w, h))
-		draw.Draw(dst, dst.Bounds(), orig, image.Point{}, draw.Src)
-		for _, box := range boxes {
-			drawWhiteDots(dst, box.Add(offset).Intersect(dst.Bounds()))
-		}
-		var out bytes.Buffer
-		if err := png.Encode(&out, dst); err != nil {
-			return nil, err
-		}
-		return out.Bytes(), nil
-	}
-
-	// 紧贴脸的检出框：切片和盖黑都用它，两者一样大。
-	heads := make([]image.Rectangle, 0, len(boxes))
 	for _, box := range boxes {
-		heads = append(heads, box.Add(offset).Intersect(orig.Bounds()))
-	}
-
-	// 取面积最大的一张脸切成 4 块——切割线正好穿过脸中心，每块只有 1/4 张脸，
-	// 打乱后分开摆到图片上方新加的黑色条带里。
-	main := largestRect(heads)
-	quads := faceQuadrants(orig, main) // 已按打乱顺序排列的 4 块
-	gap := main.Dx() / 8
-	if gap < 8 {
-		gap = 8
-	}
-	stripH := main.Dy()/2 + 2*gap
-
-	black := image.NewUniform(color.RGBA{A: 255})
-	dst := image.NewRGBA(image.Rect(0, 0, w, h+stripH))
-	draw.Draw(dst, dst.Bounds(), black, image.Point{}, draw.Src) // 条带底色黑
-	draw.Draw(dst, image.Rect(0, stripH, w, h+stripH), orig, image.Point{}, draw.Src)
-
-	// 4 块横向排开，块间留黑缝，明显是碎片而非整脸。
-	x := gap
-	for _, q := range quads {
-		qw, qh := q.Bounds().Dx(), q.Bounds().Dy()
-		if x+qw > w {
-			break
-		}
-		draw.Draw(dst, image.Rect(x, gap, x+qw, gap+qh), q, image.Point{}, draw.Src)
-		x += qw + gap
-	}
-
-	// 原图里每张脸整块盖黑（坐标下移 stripH）。
-	for _, hd := range heads {
-		draw.Draw(dst, hd.Add(image.Pt(0, stripH)), black, image.Point{}, draw.Src)
+		r := box.Add(offset).Intersect(dst.Bounds())
+		// 网眼只盖脸中央，留出边缘的发型与轮廓。
+		r = image.Rect(r.Min.X+r.Dx()/8, r.Min.Y+r.Dy()/8, r.Max.X-r.Dx()/8, r.Max.Y-r.Dy()/8)
+		drawStocking(dst, r)
 	}
 
 	var out bytes.Buffer
@@ -321,142 +275,23 @@ func applyFaceNotice(b []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// expandFaceBox 把 YuNet 的紧致人脸框向外扩到大致一个头部的范围（额头到下巴），
-// 只挡眼睛不足以让 Adobe 认不出大图正脸。结果裁剪到图像范围内。
-func expandFaceBox(b image.Rectangle, bounds image.Rectangle) image.Rectangle {
-	w := b.Dx()
-	h := b.Dy()
-	padX := w * 60 / 100
-	minX := b.Min.X - padX
-	maxX := b.Max.X + padX
-	width := maxX - minX
-	// 高度按脸宽推算（额头到下巴 ≈ 1.2×脸宽）。YuNet 框常只圈住眼部，
-	// 只按框高向下扩不足以盖住嘴和下巴。
-	height := width * 115 / 100
-	if hh := h * 180 / 100; hh > height {
-		height = hh
+// drawStocking 在给定区域上盖一层黑丝网眼：细密的深色网格线，遮住五官细节但保留轮廓。
+func drawStocking(dst *image.RGBA, r image.Rectangle) {
+	r = r.Intersect(dst.Bounds())
+	step := r.Dx() / 24
+	if step < 3 {
+		step = 3
 	}
-	top := b.Min.Y - h*85/100
-	out := image.Rect(minX, top, maxX, top+height)
-	return out.Intersect(bounds)
-}
-
-// faceQuadrants 把 box 区域切成 2×2 四块，按固定置换打乱顺序后返回这 4 块子图。
-func faceQuadrants(src *image.RGBA, box image.Rectangle) []*image.RGBA {
-	hw, hh := box.Dx()/2, box.Dy()/2
-	rects := [4]image.Rectangle{
-		image.Rect(box.Min.X, box.Min.Y, box.Min.X+hw, box.Min.Y+hh),
-		image.Rect(box.Min.X+hw, box.Min.Y, box.Max.X, box.Min.Y+hh),
-		image.Rect(box.Min.X, box.Min.Y+hh, box.Min.X+hw, box.Max.Y),
-		image.Rect(box.Min.X+hw, box.Min.Y+hh, box.Max.X, box.Max.Y),
-	}
-	perm := [4]int{3, 1, 2, 0} // 打乱顺序
-	rot := [4]int{1, 2, 3, 2}  // 每块各自旋转 90°/180°/270°，打断人脸连续性
-	out := make([]*image.RGBA, 0, 4)
-	for i, s := range perm {
-		r := rects[s]
-		q := image.NewRGBA(image.Rect(0, 0, r.Dx(), r.Dy()))
-		draw.Draw(q, q.Bounds(), src, r.Min, draw.Src)
-		out = append(out, rotateRGBA(q, rot[i]))
-	}
-	return out
-}
-
-// rotateRGBA 顺时针旋转 90° 的 k 倍，返回旋转后的新图。
-func rotateRGBA(src *image.RGBA, k int) *image.RGBA {
-	k = ((k % 4) + 4) % 4
-	if k == 0 {
-		return src
-	}
-	w, h := src.Bounds().Dx(), src.Bounds().Dy()
-	var dst *image.RGBA
-	if k == 2 {
-		dst = image.NewRGBA(image.Rect(0, 0, w, h))
-		for y := 0; y < h; y++ {
-			for x := 0; x < w; x++ {
-				dst.SetRGBA(w-1-x, h-1-y, src.RGBAAt(x, y))
-			}
-		}
-		return dst
-	}
-	dst = image.NewRGBA(image.Rect(0, 0, h, w))
-	for y := 0; y < h; y++ {
-		for x := 0; x < w; x++ {
-			if k == 1 {
-				dst.SetRGBA(h-1-y, x, src.RGBAAt(x, y))
-			} else {
-				dst.SetRGBA(y, w-1-x, src.RGBAAt(x, y))
-			}
-		}
-	}
-	return dst
-}
-
-// drawWhiteDots 在脸框内铺一层小白点阵，盖住五官（只盖脸、不外扩）。
-func drawWhiteDots(dst *image.RGBA, box image.Rectangle) {
-	step := box.Dx() / 16
-	if step < 4 {
-		step = 4
-	}
-	r := step / 3
-	if r < 2 {
-		r = 2
-	}
-	white := color.RGBA{R: 255, G: 255, B: 255, A: 255}
-	for cy := box.Min.Y + step/2; cy < box.Max.Y; cy += step {
-		for cx := box.Min.X + step/2; cx < box.Max.X; cx += step {
-			fillDot(dst, cx, cy, r, box, white)
-		}
-	}
-}
-
-// largestRect 返回面积最大的矩形。
-func largestRect(rs []image.Rectangle) image.Rectangle {
-	best := rs[0]
-	for _, r := range rs[1:] {
-		if r.Dx()*r.Dy() > best.Dx()*best.Dy() {
-			best = r
-		}
-	}
-	return best
-}
-
-// minInt 返回两数中较小者。
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// faceDotAlpha 网格点的不透明度（255 = 实心）。
-const faceDotAlpha uint8 = 26
-
-// blendPixel 把前景色按其 alpha 叠到底色上。
-func blendPixel(bg, fg color.RGBA) color.RGBA {
-	a := int(fg.A)
-	mix := func(f, b uint8) uint8 {
-		return uint8((int(f)*a + int(b)*(255-a)) / 255)
-	}
-	return color.RGBA{R: mix(fg.R, bg.R), G: mix(fg.G, bg.G), B: mix(fg.B, bg.B), A: 255}
-}
-
-// fillDot 以 (cx,cy) 为心画一个半径 r 的圆，按 c.A 与底图混合，裁剪在 clip 内。
-func fillDot(dst *image.RGBA, cx, cy, r int, clip image.Rectangle, c color.RGBA) {
-	r2 := r * r
-	for y := cy - r; y <= cy+r; y++ {
-		if y < clip.Min.Y || y >= clip.Max.Y {
-			continue
-		}
-		for x := cx - r; x <= cx+r; x++ {
-			if x < clip.Min.X || x >= clip.Max.X {
+	for y := r.Min.Y; y < r.Max.Y; y++ {
+		for x := r.Min.X; x < r.Max.X; x++ {
+			if (x-r.Min.X)%step != 0 && (y-r.Min.Y)%step != 0 {
 				continue
 			}
-			dx := x - cx
-			dy := y - cy
-			if dx*dx+dy*dy <= r2 {
-				dst.SetRGBA(x, y, blendPixel(dst.RGBAAt(x, y), c))
-			}
+			c := dst.RGBAAt(x, y)
+			c.R = uint8(uint32(c.R) * 10 / 100)
+			c.G = uint8(uint32(c.G) * 10 / 100)
+			c.B = uint8(uint32(c.B) * 10 / 100)
+			dst.SetRGBA(x, y, c)
 		}
 	}
 }
