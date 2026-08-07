@@ -278,13 +278,17 @@ func applyFaceNotice(b []byte) ([]byte, error) {
 // drawStocking 在给定区域上盖一层黑丝网眼：细密的深色网格线，遮住五官细节但保留轮廓。
 func drawStocking(dst *image.RGBA, r image.Rectangle) {
 	r = r.Intersect(dst.Bounds())
-	step := r.Dx() / 18
-	if step < 4 {
-		step = 4
+	step := r.Dx() / 24
+	if step < 3 {
+		step = 3
+	}
+	line := step / 2
+	if line < 1 {
+		line = 1
 	}
 	for y := r.Min.Y; y < r.Max.Y; y++ {
 		for x := r.Min.X; x < r.Max.X; x++ {
-			if (x-r.Min.X)%step != 0 && (y-r.Min.Y)%step != 0 {
+			if (x-r.Min.X)%step >= line && (y-r.Min.Y)%step >= line {
 				continue
 			}
 			c := dst.RGBAAt(x, y)
@@ -295,3 +299,7 @@ func drawStocking(dst *image.RGBA, r image.Rectangle) {
 		}
 	}
 }
+
+// faceMaskPromptNote 附加到 Seedance 提示词后：告知模型参考图脸部的网格线只是打码，
+// 需要忽略网格本身并完整还原面部细节。
+const faceMaskPromptNote = "参考图人物脸部覆盖的细密网格线仅为隐私打码，不是人物本身的特征：生成时请完全忽略这些网格线，不要在画面中出现任何网格、方格、纹理或遮挡；请依据参考图的五官轮廓完整还原人物真实面孔，保留妆容、眉眼、发型、发饰、耳饰、头冠等一切面部与头部装饰细节，人物面部必须清晰完整、前后镜头保持一致。"

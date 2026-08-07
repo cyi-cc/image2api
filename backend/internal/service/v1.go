@@ -1803,7 +1803,9 @@ func (s *V1Service) generateAdobeVideo(ctx context.Context, eventID string, mode
 	}
 	// Seedance 参考图先做人脸打码再上传；检不出人脸就沿用原图，
 	// 检测器不可用则直接报错，避免把未打码的人脸传给上游。
+	prompt := in.Prompt
 	if isSeedanceModel(modelItem.ID) {
+		faceMasked := false
 		for i, r := range imgRefs {
 			marked, mErr := applyFaceNotice(r)
 			if errors.Is(mErr, ErrNoFaceDetected) {
@@ -1813,6 +1815,10 @@ func (s *V1Service) generateAdobeVideo(ctx context.Context, eventID string, mode
 				return nil, "", fmt.Errorf("face mask: %w", mErr)
 			}
 			imgRefs[i] = marked
+			faceMasked = true
+		}
+		if faceMasked {
+			prompt = strings.TrimSpace(prompt + "\n\n" + faceMaskPromptNote)
 		}
 	}
 
@@ -1859,7 +1865,7 @@ func (s *V1Service) generateAdobeVideo(ctx context.Context, eventID string, mode
 			}
 			audioBlobIDs = append(audioBlobIDs, id)
 		}
-		bytes, meta, genErr := s.adobe.GenerateVideo(ctx, token.Value, engine, in.Prompt, aspectRatio, durationSeconds, resolution, referenceMode, upstreamModel, blobIDs, videoBlobIDs, audioBlobIDs, downloadResult)
+		bytes, meta, genErr := s.adobe.GenerateVideo(ctx, token.Value, engine, prompt, aspectRatio, durationSeconds, resolution, referenceMode, upstreamModel, blobIDs, videoBlobIDs, audioBlobIDs, downloadResult)
 		if genErr == nil {
 			videoURL = strings.TrimSpace(stringValue(meta["video_url"]))
 		}
