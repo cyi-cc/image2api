@@ -368,7 +368,7 @@ func (h *UserGenerationHandler) VideoPresets(c *gin.Context) {
 				"provider":             "adobe",
 				"durations":            []string{"4s", "6s", "8s"},
 				"ratios":               []string{"16:9", "9:16"},
-				"resolutions":          []string{"720p"},
+				"resolutions":          []string{"720p", "1080p"},
 			},
 			{
 				"key":                  "seedance-2.0-fast",

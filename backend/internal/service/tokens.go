@@ -713,15 +713,24 @@ func (s *TokenService) checkPendingAdobe(tokenID, cookie string) {
 	if cb, e := s.adobe.FetchCreditsBalance(ctx, result.AccessToken); e == nil {
 		quotaMeta["cached_quota_at"] = int(time.Now().Unix())
 		planCap := strings.ToLower(strings.TrimSpace(stringValue(cb["plan"])))
-		quotaMeta["plan"] = planCap
 		isVIP := planCap != "" && planCap != "free"
 		planKnown = planCap != ""
 
-		if rem, ok := cb["remaining"].(int); ok {
+		rem, remOK := cb["remaining"].(int)
+		if remOK {
 			quotaMeta["cached_quota_remaining"] = rem
-			if isVIP && rem > 0 && rem <= 4000 {
-				quotaMeta["is_sub_account"] = true
-			}
+		}
+		// 额度打到 0 的 VIP(母号/子号) 视为普号：写死 plan=free，额度恢复(>0)后下次刷新自动还原真实身份。
+		if isVIP && remOK && rem <= 0 {
+			isVIP = false
+			planCap = "free"
+		}
+		quotaMeta["plan"] = planCap
+		// VIP 号导入即固定 母号/子号 身份并显式写入 is_sub_account：积分 1..4000 视为子号，
+		// 其余（含 >4000）为母号(false)。母号必须显式写 false，否则 isVipMotherAccount
+		// 因字段缺失把它判为非母号，导致 Seedance 无号可调度。
+		if isVIP {
+			quotaMeta["is_sub_account"] = rem > 0 && rem <= 4000
 		}
 
 		// Set concurrency + limits based on plan
@@ -1314,6 +1323,11 @@ func (s *TokenService) Quota(ctx context.Context, pool, id string) (map[string]a
 		}
 		if remaining, ok := data["remaining"].(int); ok {
 			meta["cached_quota_remaining"] = remaining
+			// 额度打到 0 的 VIP(母号/子号) 视为普号：写死 plan=free，额度恢复(>0)后下次扫描自动还原真实身份。
+			if plan != "" && plan != "free" && remaining <= 0 {
+				plan = "free"
+				meta["plan"] = "free"
+			}
 			// is_sub_account 仅在导入时写入，刷新配额时不覆盖
 			if _, hasFlag := meta["is_sub_account"]; !hasFlag && plan != "free" {
 				meta["is_sub_account"] = remaining > 0 && remaining <= 4000

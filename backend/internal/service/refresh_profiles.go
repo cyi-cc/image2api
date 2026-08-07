@@ -123,9 +123,16 @@ func (s *RefreshProfileService) RefreshNow(ctx context.Context, id string) error
 		tokenPatch["meta"] = meta
 
 		planCap := strings.ToLower(strings.TrimSpace(stringValue(quotaData["plan"])))
-		meta["plan"] = planCap
 		isVIP := planCap != "" && !strings.EqualFold(planCap, "free")
 		planKnown = planCap != ""
+		// 额度打到 0 的 VIP(母号/子号) 视为普号：写死 plan=free，额度恢复(>0)后下次刷新自动还原真实身份。
+		if isVIP {
+			if rem, ok := quotaData["remaining"].(int); ok && rem <= 0 {
+				isVIP = false
+				planCap = "free"
+			}
+		}
+		meta["plan"] = planCap
 
 		// VIP: use Adobe's reset time; set concurrency 5.
 		// 母号/子号 身份固定，不随积分动态变化——只有降级普号才刷新身份。
@@ -134,6 +141,18 @@ func (s *RefreshProfileService) RefreshNow(ctx context.Context, id string) error
 				tokenPatch["cached_quota_reset_after"] = resetAfter
 			}
 			tokenPatch["concurrency"] = 5
+			// 身份固定：这里重建了整个 meta，若不带上 is_sub_account，刷新会把导入时
+			// 确定的 母号/子号 标记冲掉。身份只在导入时确定，刷新只沿用、绝不靠积分猜：
+			// 已有标记就带过来；取不到（没 meta / 缺字段）说明身份未知，直接置死号。
+			if existing, gerr := s.tokens.Get(ctx, "adobe", id); gerr == nil {
+				if v, ok := existing.Meta["is_sub_account"]; ok {
+					meta["is_sub_account"] = v
+				}
+			}
+			if _, ok := meta["is_sub_account"]; !ok {
+				tokenPatch["status"] = "disabled"
+				tokenPatch["dead"] = true
+			}
 		} else {
 			// Free account: concurrency 1, limit image+video
 			tokenPatch["concurrency"] = 1

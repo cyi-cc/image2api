@@ -13,6 +13,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/matoous/go-nanoid/v2 v2.1.0
 	github.com/redis/go-redis/v9 v9.16.0
+	github.com/yalue/onnxruntime_go v1.32.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/image v0.43.0
 	gorm.io/datatypes v1.2.7

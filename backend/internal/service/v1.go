@@ -1801,6 +1801,20 @@ func (s *V1Service) generateAdobeVideo(ctx context.Context, eventID string, mode
 			imgRefs = append(imgRefs, r)
 		}
 	}
+	// Seedance 参考图先做人脸打码再上传；检不出人脸就沿用原图，
+	// 检测器不可用则直接报错，避免把未打码的人脸传给上游。
+	if isSeedanceModel(modelItem.ID) {
+		for i, r := range imgRefs {
+			marked, mErr := applyFaceNotice(r)
+			if errors.Is(mErr, ErrNoFaceDetected) {
+				continue
+			}
+			if mErr != nil {
+				return nil, "", fmt.Errorf("face mask: %w", mErr)
+			}
+			imgRefs[i] = marked
+		}
+	}
 
 	engine, upstreamModel := resolveAdobeVideoEngine(modelItem.ID)
 	referenceMode := defaultString(strings.TrimSpace(modelItem.ReferenceMode), "frame")
