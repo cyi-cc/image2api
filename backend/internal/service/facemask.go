@@ -278,9 +278,9 @@ func applyFaceNotice(b []byte) ([]byte, error) {
 // drawStocking 在给定区域上盖一层黑丝网眼：细密的深色网格线，遮住五官细节但保留轮廓。
 func drawStocking(dst *image.RGBA, r image.Rectangle) {
 	r = r.Intersect(dst.Bounds())
-	step := r.Dx() / 24
-	if step < 3 {
-		step = 3
+	step := r.Dx() / 18
+	if step < 4 {
+		step = 4
 	}
 	for y := r.Min.Y; y < r.Max.Y; y++ {
 		for x := r.Min.X; x < r.Max.X; x++ {
