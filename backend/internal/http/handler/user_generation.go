@@ -4,6 +4,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"backend/internal/service"
 	"github.com/gin-gonic/gin"
@@ -12,12 +14,63 @@ import (
 type UserGenerationHandler struct {
 	userGen *service.UserGenerationService
 	admin   *service.AdminReadService
+	idem    *idemStore
 }
 
 func NewUserGenerationHandler(userGen *service.UserGenerationService, admin *service.AdminReadService) *UserGenerationHandler {
 	return &UserGenerationHandler{
 		userGen: userGen,
 		admin:   admin,
+		idem:    &idemStore{m: map[string]*idemEntry{}},
+	}
+}
+
+// /generate 是同步长请求(视频要跑好几分钟)。等待期间连接一旦被重置(CDN 回源
+// 超时 / HTTP2 GOAWAY),浏览器会把还没拿到响应的 POST 透明重发,后端就会再生成
+// 一次、再扣一次积分。前端为每个任务带一个 Idempotency-Key,同一个 key 只真正
+// 执行一次:原任务还在跑就直接拒绝,已经跑完就把原结果返回。
+const idemTTL = 10 * time.Minute
+
+type idemEntry struct {
+	done bool
+	resp map[string]any
+	at   time.Time
+}
+
+type idemStore struct {
+	mu sync.Mutex
+	m  map[string]*idemEntry
+}
+
+// begin 登记一个 key。第二个返回值为 true 表示这个 key 已经在处理或刚处理完,
+// 返回的 entry 是原来那次的状态。
+func (s *idemStore) begin(key string) (*idemEntry, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	for k, e := range s.m {
+		if e.done && now.Sub(e.at) > idemTTL {
+			delete(s.m, k)
+		}
+	}
+	if e, ok := s.m[key]; ok {
+		return e, true
+	}
+	e := &idemEntry{at: now}
+	s.m[key] = e
+	return e, false
+}
+
+// finish 记下结果供重发命中;resp 为 nil(本次失败)时直接释放 key,允许用户重试。
+func (s *idemStore) finish(key string, resp map[string]any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if resp == nil {
+		delete(s.m, key)
+		return
+	}
+	if e, ok := s.m[key]; ok {
+		e.done, e.resp, e.at = true, resp, time.Now()
 	}
 }
 
@@ -76,6 +129,20 @@ func (h *UserGenerationHandler) Generate(c *gin.Context) {
 		return
 	}
 
+	var generated map[string]any // 成功时的响应,供同 key 的重发直接命中
+	if key := strings.TrimSpace(c.GetHeader("Idempotency-Key")); key != "" {
+		key = user.ID + "|" + key
+		if e, dup := h.idem.begin(key); dup {
+			if e.done {
+				c.JSON(http.StatusOK, e.resp)
+			} else {
+				c.JSON(http.StatusConflict, gin.H{"detail": "该任务已在生成中,已忽略重复提交"})
+			}
+			return
+		}
+		defer func() { h.idem.finish(key, generated) }()
+	}
+
 	resp, err := h.userGen.Generate(c.Request.Context(), user, service.UserGenerateRequest{
 		Model:           body.Model,
 		Prompt:          body.Prompt,
@@ -113,6 +180,7 @@ func (h *UserGenerationHandler) Generate(c *gin.Context) {
 		}
 		return
 	}
+	generated = resp
 	c.JSON(http.StatusOK, resp)
 }
 
@@ -602,10 +670,21 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"type":                 "video",
 			"ratios":               []string{"2:3", "3:2", "1:1", "9:16", "16:9"},
 			"resolutions":          []string{"720p"},
-			"durations":            []string{"6s", "10s"},
-			"max_reference_images": 6,
-			"reference_mode":       "asset",
+			"durations":            []string{"6s", "10s", "15s"},
+			"max_reference_images": 1,
+			"reference_mode":       "frame",
 			"description":          "Grok Imagine video (文/图生视频)",
+		},
+		{
+			"id":                   "grok-image",
+			"provider":             "grok",
+			"type":                 "image",
+			"ratios":               []string{"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9"},
+			"resolutions":          []string{"1K", "2K"},
+			"image_to_image":       true,
+			"max_reference_images": 3,
+			"reference_mode":       "asset",
+			"description":          "Grok Imagine image (文生图 / 图生图)",
 		},
 		{
 			"id":                   "seedream-4.5",
@@ -799,6 +878,15 @@ func (h *UserGenerationHandler) publicModels() ([]gin.H, error) {
 			"ratios":      []string{"2:3", "3:2", "1:1", "9:16", "16:9"},
 			"resolutions": []string{"720p"},
 			"description": "Grok Imagine video",
+			"stub":        false,
+		},
+		{
+			"id":          "grok-image",
+			"provider":    "grok",
+			"kind":        "image",
+			"ratios":      []string{"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9"},
+			"resolutions": []string{"1K", "2K"},
+			"description": "Grok Imagine image",
 			"stub":        false,
 		},
 		{

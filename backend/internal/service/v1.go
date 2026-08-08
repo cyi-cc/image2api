@@ -568,6 +568,24 @@ func (s *V1Service) prepareImageExecution(ctx context.Context, principal *APIPri
 		}
 		imageBytes = b
 		upstreamURL = u
+	case "grok":
+		b, u, execErr := s.generateGrokImage(genCtx, eventID, modelItem, in, aspectRatio, resolution, noStore)
+		if execErr != nil {
+			_ = s.refundIfNeeded(ctx, principal, eventID, price)
+			_ = s.events.UpdateStatus(ctx, eventID, "failed", execErr.Error(), 0)
+			switch {
+			case errors.Is(execErr, grok.ErrAuth):
+				return nil, ErrProviderAuth
+			case errors.Is(execErr, grok.ErrQuotaExhausted):
+				return nil, ErrProviderQuota
+			case errors.Is(execErr, grok.ErrTemporaryUpstream):
+				return nil, ErrProviderTemporary
+			default:
+				return nil, fmt.Errorf("%w: %v", ErrProviderExecution, execErr)
+			}
+		}
+		imageBytes = b
+		upstreamURL = u
 	case "runway":
 		b, u, execErr := s.generateRunwayImage(genCtx, eventID, modelItem, in, aspectRatio, resolution, noStore)
 		if execErr != nil {
@@ -718,7 +736,7 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 			return nil, err
 		}
 	}
-	genCtx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+	genCtx, cancel := context.WithTimeout(ctx, videoGenBudget)
 	defer cancel()
 
 	// Per-user concurrency gate (画图台 + API key combined); admin tests exempt.
@@ -920,7 +938,7 @@ func (s *V1Service) StartVideoJob(ctx context.Context, principal *APIPrincipal, 
 // runVideoJob renders the clip in the background, capturing the upstream URL
 // (downloadResult=false → no bytes, no RustFS) and storing it on the event.
 func (s *V1Service) runVideoJob(ctx context.Context, principal *APIPrincipal, in V1VideoRequest, modelItem *model.ModelConfig, eventID, aspectRatio, resolution, duration string, price float64) {
-	genCtx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+	genCtx, cancel := context.WithTimeout(ctx, videoGenBudget)
 	defer cancel()
 	s.inflight.Add(eventID, cancel)
 	defer s.inflight.Done(eventID)
@@ -1487,6 +1505,10 @@ func (s *V1Service) finishUnimplementedEvent(ctx context.Context, eventID string
 	return s.events.UpdateStatus(ctx, eventID, "failed", "generation executor not implemented yet", 0)
 }
 
+// videoGenBudget caps one video render end-to-end (submit + poll + download).
+// 上游慢的时候（seedance 长镜头）12 分钟不够，统一给 20 分钟。
+const videoGenBudget = 20 * time.Minute
+
 // grokConcurrencyPerAccount is how many simultaneous generations one grok account
 // may run (grok tolerates 10, unlike the 1-per-account default elsewhere).
 const grokConcurrencyPerAccount = 10
@@ -1801,26 +1823,7 @@ func (s *V1Service) generateAdobeVideo(ctx context.Context, eventID string, mode
 			imgRefs = append(imgRefs, r)
 		}
 	}
-	// Seedance 参考图先做人脸打码再上传；检不出人脸就沿用原图，
-	// 检测器不可用则直接报错，避免把未打码的人脸传给上游。
 	prompt := in.Prompt
-	if isSeedanceModel(modelItem.ID) {
-		faceMasked := false
-		for i, r := range imgRefs {
-			marked, mErr := applyFaceNotice(r)
-			if errors.Is(mErr, ErrNoFaceDetected) {
-				continue
-			}
-			if mErr != nil {
-				return nil, "", fmt.Errorf("face mask: %w", mErr)
-			}
-			imgRefs[i] = marked
-			faceMasked = true
-		}
-		if faceMasked {
-			prompt = strings.TrimSpace(prompt + "\n\n" + faceMaskPromptNote)
-		}
-	}
 
 	engine, upstreamModel := resolveAdobeVideoEngine(modelItem.ID)
 	referenceMode := defaultString(strings.TrimSpace(modelItem.ReferenceMode), "frame")
@@ -2279,11 +2282,11 @@ func upstreamQuality(resolution string) string {
 	return ""
 }
 
-// generateGrokVideo runs grok's imagine video pipeline across the grok pool.
-// Mirrors the runway policy: no pre-deduct, skip accounts known out of credits
-// (cached remaining <= 0), and treat an out-of-credits / auth failure as a dead
-// account (the grok sso can't be renewed — 失效就失效). Text-to-video only for
-// now (grok reference-image upload isn't wired yet).
+// generateGrokVideo runs grok's imagine video pipeline across the grok pool,
+// via Grok Console (console.x.ai) — the same sso account, but the clean JSON
+// media API instead of the anti-bot gated grok.com website flow.
+// 额度是本地写死的（每号 图 5 / 视频 2）：视频计数归零的号不再调度，成功一次扣一个，
+// 图/视频都归零直接判死；auth / 额度错误同样判死换号（grok sso 不续期，失效就失效）。
 func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, modelItem *model.ModelConfig, in V1VideoRequest, aspectRatio, resolution string, durationSeconds int, downloadResult bool) ([]byte, string, error) {
 	if s.grok == nil {
 		return nil, "", errors.New("grok client not configured")
@@ -2309,7 +2312,7 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 		if item.Status != "active" || item.Dead || strings.TrimSpace(item.Value) == "" {
 			continue
 		}
-		if rem, ok := jsonMapInt(item.Meta, "cached_quota_remaining"); ok && rem <= 0 {
+		if rem, ok := jsonMapInt(item.Meta, repo.GrokVideoQuotaKey); ok && rem <= 0 {
 			continue
 		}
 		active = append(active, item)
@@ -2338,13 +2341,15 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 			defer s.acctRelease(ctx, token.ID, eventID)
 			_ = s.events.SetAccount(ctx, eventID, token.ID, token.AccountEmail)
 			_ = s.tokens.TouchLastUsed(ctx, token.ID)
-			d, meta, genErr := s.grok.GenerateVideo(ctx, token.Value, in.Prompt, aspectRatio, res, durationSeconds, frames, downloadResult)
+			d, meta, genErr := s.grok.GenerateConsoleVideo(ctx, token.Value, in.Prompt, aspectRatio, res, durationSeconds, frames, downloadResult)
 			if genErr == nil {
 				_, _ = s.tokens.Update(ctx, "grok", token.ID, map[string]any{
 					"last_used_at":  time.Now(),
 					"success_total": gorm.Expr("success_total + 1"),
 					"fails":         0,
 				})
+				// 本地额度各扣各的；图/视频都归零时账号直接判死。
+				_ = s.tokens.ConsumeGrokQuota(ctx, token.ID, "video")
 				data = d
 				videoURL = strings.TrimSpace(stringValue(meta["video_url"]))
 				return true, false
@@ -2363,6 +2368,102 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 		}()
 		if done {
 			return data, videoURL, nil
+		}
+		if failover {
+			continue
+		}
+		return nil, "", lastErr
+	}
+	if lastErr == nil {
+		if busy > 0 {
+			return nil, "", ErrConcurrencyFull
+		}
+		lastErr = ErrProviderExecution
+	}
+	return nil, "", lastErr
+}
+
+// generateGrokImage runs Grok Console's image pipeline (grok-imagine-image)
+// across the grok pool. 额度策略同视频路径，只是扣的是图片那份计数。带参考图时
+// （最多 3 张，内联在请求里）自动走 /images/edits 的 quality 上游 — 图生图。
+func (s *V1Service) generateGrokImage(ctx context.Context, eventID string, modelItem *model.ModelConfig, in V1ImageRequest, aspectRatio, resolution string, noStore bool) ([]byte, string, error) {
+	// API-key (noStore) requests skip the download and return the upstream URL.
+	urlOnly := noStore
+	if s.grok == nil {
+		return nil, "", errors.New("grok client not configured")
+	}
+	if s.settings != nil {
+		if proxy, err := s.settings.GetValue(ctx, "proxy.url"); err == nil {
+			s.grok.SetProxy(proxy)
+		}
+	}
+
+	refs, err := decodeReferenceImages(in.ReferenceImages, max(1, modelItem.MaxReferenceImages))
+	if err != nil {
+		return nil, "", err
+	}
+
+	items, err := s.tokens.ListByPool(ctx, "grok")
+	if err != nil {
+		return nil, "", err
+	}
+	var active []model.TokenAccount
+	for _, item := range items {
+		if item.Status != "active" || item.Dead || strings.TrimSpace(item.Value) == "" {
+			continue
+		}
+		if rem, ok := jsonMapInt(item.Meta, repo.GrokImageQuotaKey); ok && rem <= 0 {
+			continue
+		}
+		active = append(active, item)
+	}
+	active = pinTestAccount(items, active, in.AccountID)
+	if len(active) == 0 {
+		return nil, "", ErrNoProviderAccount
+	}
+	s.rotateRoundRobin("grok", active)
+
+	var lastErr error
+	busy := 0
+	for _, token := range active {
+		// Per-account concurrency gate.
+		if !s.acctAcquire(ctx, token.ID, eventID, accountConcurrency(token)) {
+			busy++
+			continue
+		}
+		var data []byte
+		var artURL string
+		done, failover := func() (bool, bool) {
+			defer s.acctRelease(ctx, token.ID, eventID)
+			_ = s.events.SetAccount(ctx, eventID, token.ID, token.AccountEmail)
+			_ = s.tokens.TouchLastUsed(ctx, token.ID)
+			d, meta, genErr := s.grok.GenerateConsoleImage(ctx, token.Value, in.Prompt, aspectRatio, resolution, refs, urlOnly)
+			if genErr == nil {
+				_, _ = s.tokens.Update(ctx, "grok", token.ID, map[string]any{
+					"last_used_at":  time.Now(),
+					"success_total": gorm.Expr("success_total + 1"),
+					"fails":         0,
+				})
+				// 本地额度各扣各的；图/视频都归零时账号直接判死。
+				_ = s.tokens.ConsumeGrokQuota(ctx, token.ID, "image")
+				data = d
+				artURL = strings.TrimSpace(stringValue(meta["image_url"]))
+				return true, false
+			}
+			lastErr = genErr
+			switch {
+			case errors.Is(genErr, grok.ErrAuth), errors.Is(genErr, grok.ErrQuotaExhausted):
+				// 失效 / 额度没了 → 当 401 判死(不续期),换号。
+				s.markTokenFailure(ctx, "grok", token, "image", true, false)
+				return false, true
+			case errors.Is(genErr, grok.ErrTemporaryUpstream):
+				return false, true
+			default:
+				return false, false
+			}
+		}()
+		if done {
+			return data, artURL, nil
 		}
 		if failover {
 			continue

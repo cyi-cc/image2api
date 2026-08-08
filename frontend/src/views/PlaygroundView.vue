@@ -556,14 +556,23 @@ async function fireOne() {
     payload.reference_images = refs.filter(Boolean)
   }
 
+  // 同一个任务带固定的 Idempotency-Key:长请求期间连接被重置、浏览器/网关透明
+  // 重发 POST 时,后端不会再生成一次、再扣一次积分。
+  const opts = jsonBody('POST', payload)
+  opts.headers['Idempotency-Key'] = task.id + '-' + task.ts
+
   try {
-    const r = await api('/generate', jsonBody('POST', payload))
+    const r = await api('/generate', opts)
     if (r.ok && r.data?.url) {
       task.status = 'done'
       task.url = r.data.url
       task.elapsed_ms = r.data.elapsed_ms
       task.charged = r.data.charged ?? chargedPrice
       if (auth.user && r.data.credits != null) auth.user.credits = r.data.credits
+    } else if (r.status === 409 && String(r.data?.detail || '').includes('重复提交')) {
+      // 这次响应来自被透明重发的那个 POST —— 原任务还在生成,保持 running,
+      // loadHistory() 在结果落库后认领它。
+      task.status = 'running'
     } else if (GATEWAY_TIMEOUT.has(r.status)) {
       // CDN/代理回源超时(如 EdgeOne 524)—— 后端仍在生成。保持 running,
       // loadHistory() 在结果落库后认领它。

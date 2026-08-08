@@ -964,30 +964,13 @@ func (s *TokenService) checkPendingGrok(tokenID, ssoToken string) {
 	} else if strings.TrimSpace(email) != "" {
 		_, _ = s.tokens.Update(ctx, "grok", tokenID, map[string]any{"account_email": strings.TrimSpace(email)})
 	}
-	data, err := s.grok.FetchCreditsBalance(ctx, ssoToken)
-	if err != nil {
-		if errors.Is(err, grok.ErrAuth) {
-			s.finishPending(ctx, "grok", tokenID, "disabled", true, nil)
-			return
-		}
-		s.finishPending(ctx, "grok", tokenID, "active", false, nil)
-		return
-	}
-	quotaMeta := map[string]any{}
-	if rem, ok := data["remaining"].(int); ok {
-		quotaMeta["cached_quota_remaining"] = rem
-		quotaMeta["cached_quota_at"] = int(time.Now().Unix())
-	}
-	if used, ok := data["used"].(int); ok {
-		quotaMeta["cached_quota_used"] = used
-	}
-	if total, ok := data["total"].(int); ok {
-		quotaMeta["cached_quota_total"] = total
-	}
-	if reset := strings.TrimSpace(stringValue(data["reset_after"])); reset != "" {
-		_, _ = s.tokens.Update(ctx, "grok", tokenID, map[string]any{"cached_quota_reset_after": reset})
-	}
-	s.finishPending(ctx, "grok", tokenID, "active", false, quotaMeta)
+	// Console 没有额度接口，所以额度不查上游：导入即写死 图 5 / 视频 2，生成时各扣各的，
+	// 两个都归零就判死；没有恢复时间。
+	s.finishPending(ctx, "grok", tokenID, "active", false, map[string]any{
+		repo.GrokImageQuotaKey: repo.GrokImageQuota,
+		repo.GrokVideoQuotaKey: repo.GrokVideoQuota,
+		"cached_quota_at":      int(time.Now().Unix()),
+	})
 }
 
 // RefreshGrokLiveness re-validates every live grok account each maintenance tick.
@@ -1039,28 +1022,15 @@ func (s *TokenService) RefreshGrokLiveness(ctx context.Context) {
 			_, _ = s.tokens.Update(ctx, "grok", it.ID, map[string]any{"status": "disabled", "dead": true})
 			continue
 		}
-		data, derr := s.grok.FetchCreditsBalance(ctx, it.Value)
-		if derr != nil {
-			// Same policy as the subscription probe: a credits-balance 401/403 is
-			// transient, never a reason to kill a live account. Skip and retry.
+		// 额度不查上游（Console 无额度接口）：只给老号补齐写死的 图 5 / 视频 2。
+		if _, ok := jsonMapInt(it.Meta, repo.GrokImageQuotaKey); ok {
 			continue
 		}
 		meta := cloneJSONMap(it.Meta)
+		meta[repo.GrokImageQuotaKey] = repo.GrokImageQuota
+		meta[repo.GrokVideoQuotaKey] = repo.GrokVideoQuota
 		meta["cached_quota_at"] = int(time.Now().Unix())
-		if rem, ok := data["remaining"].(int); ok {
-			meta["cached_quota_remaining"] = rem
-		}
-		if used, ok := data["used"].(int); ok {
-			meta["cached_quota_used"] = used
-		}
-		if total, ok := data["total"].(int); ok {
-			meta["cached_quota_total"] = total
-		}
-		patch := map[string]any{"meta": meta}
-		if reset := strings.TrimSpace(stringValue(data["reset_after"])); reset != "" {
-			patch["cached_quota_reset_after"] = reset
-		}
-		_, _ = s.tokens.Update(ctx, "grok", it.ID, patch)
+		_, _ = s.tokens.Update(ctx, "grok", it.ID, map[string]any{"meta": meta})
 	}
 }
 
@@ -1567,53 +1537,28 @@ func (s *TokenService) Quota(ctx context.Context, pool, id string) (map[string]a
 			"error":           data["error"],
 		}, nil
 	}
-	if poolToType(item.Pool) == "grok" && s.grok != nil {
-		data, err := s.grok.FetchCreditsBalance(ctx, item.Value)
-		if err != nil {
-			if errors.Is(err, grok.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
-					"status": "disabled",
-					"dead":   true,
-					"fails":  gorm.Expr("fails + 1"),
-				})
-			}
-			return nil, err
+	if poolToType(item.Pool) == "grok" {
+		// 本地写死的额度（图 5 / 视频 2），没有上游接口可查，所以刷新只是回读本地计数。
+		images, ok := jsonMapInt(item.Meta, repo.GrokImageQuotaKey)
+		if !ok {
+			images = repo.GrokImageQuota
 		}
-		patch := map[string]any{}
-		meta := cloneJSONMap(item.Meta)
-		meta["cached_quota_at"] = int(time.Now().Unix())
-		if remaining, ok := data["remaining"].(int); ok {
-			// Refresh only updates the displayed credit number; never flips status.
-			// Out-of-credits is judged at generation time (dead/401, no renewal).
-			meta["cached_quota_remaining"] = remaining
-		}
-		if used, ok := data["used"].(int); ok {
-			meta["cached_quota_used"] = used
-		}
-		if total, ok := data["total"].(int); ok {
-			meta["cached_quota_total"] = total
-		}
-		patch["meta"] = meta
-		// Recovery time is the credits' weekly reset (when the grant refills) —
-		// purely informational, NOT a death deadline (liveness is judged by the
-		// subscriptions sweep / real 401s), so it's safe to refresh every time.
-		if reset := strings.TrimSpace(stringValue(data["reset_after"])); reset != "" {
-			patch["cached_quota_reset_after"] = reset
-			item.CachedQuotaResetAfter = reset
-		}
-		if updated, updateErr := s.tokens.Update(ctx, item.Pool, item.ID, patch); updateErr == nil {
-			item = updated
+		videos, ok := jsonMapInt(item.Meta, repo.GrokVideoQuotaKey)
+		if !ok {
+			videos = repo.GrokVideoQuota
 		}
 		return map[string]any{
 			"supported":       true,
-			"remaining":       data["remaining"],
-			"used":            data["used"],
-			"total":           data["total"],
-			"reset_after":     emptyToNil(item.CachedQuotaResetAfter),
-			"quota_cached_at": meta["cached_quota_at"],
-			"unchanged":       false,
-			"unknown":         boolValueWithDefault(data["unknown"], false),
-			"error":           data["error"],
+			"remaining":       images + videos,
+			"image_remaining": images,
+			"video_remaining": videos,
+			"used":            nil,
+			"total":           nil,
+			"reset_after":     nil,
+			"quota_cached_at": item.Meta["cached_quota_at"],
+			"unchanged":       true,
+			"unknown":         false,
+			"error":           nil,
 		}, nil
 	}
 	remaining, hasRemaining := jsonMapInt(item.Meta, "cached_quota_remaining")
@@ -1734,6 +1679,19 @@ func accountRow(item model.TokenAccount, inFlight int64) map[string]any {
 	if item.Meta != nil {
 		teamID = strings.TrimSpace(stringValue(item.Meta["team_id"]))
 	}
+	// grok 额度是本地写死的两个计数（图 / 视频），前台单独一列展示成 "5/2"。
+	var grokImages, grokVideos any
+	if typeLabel == "grok" {
+		images, ok := jsonMapInt(item.Meta, repo.GrokImageQuotaKey)
+		if !ok {
+			images = repo.GrokImageQuota
+		}
+		videos, ok := jsonMapInt(item.Meta, repo.GrokVideoQuotaKey)
+		if !ok {
+			videos = repo.GrokVideoQuota
+		}
+		grokImages, grokVideos = images, videos
+	}
 	hasQuota := typeLabel == "openai" || typeLabel == "adobe" || typeLabel == "runway" || typeLabel == "leonardo" || typeLabel == "krea" || typeLabel == "imagine" || typeLabel == "grok"
 	return map[string]any{
 		"id":                item.ID,
@@ -1742,6 +1700,8 @@ func accountRow(item model.TokenAccount, inFlight int64) map[string]any {
 		"email":             emptyToNil(email),
 		"team_id":           emptyToNil(teamID),
 		"remaining":         valueOrNil(hasQuota && hasRemaining, remaining),
+		"image_remaining":   grokImages,
+		"video_remaining":   grokVideos,
 		"reset_after":       emptyToNil(item.CachedQuotaResetAfter),
 		"quota_cached_at":   valueOrNil(quotaAt != 0, quotaAt),
 		"created_at":        unixOrNil(item.AddedAt),

@@ -291,7 +291,7 @@ func (c *Client) createPost(ctx context.Context, client tlsclient.HttpClient, to
 // assets.grok.com is not anti-bot gated) until grok finishes rendering it.
 // 404 means "still rendering"; auth failures abort.
 func (c *Client) waitForAsset(ctx context.Context, client tlsclient.HttpClient, token, url string) error {
-	deadline := time.Now().Add(6 * time.Minute)
+	deadline := time.Now().Add(20 * time.Minute)
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
