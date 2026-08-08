@@ -33,6 +33,11 @@ const (
 	// sec-ch-ua must agree with userAgent's major version — a mismatch is itself a
 	// bot signal.
 	secChUA = `"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"`
+	// get-session is fronted by Vercel's checkpoint, which 429s most machine
+	// requests; a proxied retry (new exit IP per attempt) succeeds roughly one time
+	// in five, so several spaced attempts are needed for one refresh to land.
+	getSessionAttempts   = 10
+	getSessionRetryDelay = 2 * time.Second
 )
 
 var (
@@ -189,66 +194,49 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 	}
 	c.mu.Unlock()
 
-	client, err := c.newDirectTLSClient()
-	if err != nil {
-		return nil, err
+	// Vercel's checkpoint 429s the vast majority of get-session calls, whatever the
+	// TLS fingerprint — but a proxied retry does get through every few attempts
+	// (each new client takes a new exit IP), so retry instead of giving up on the
+	// first 429.
+	var body []byte
+	var status int
+	var setCookies []string
+	var err error
+	for attempt := 0; attempt < getSessionAttempts; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(getSessionRetryDelay):
+			}
+		}
+		status, body, setCookies, err = c.fetchSession(ctx, send, c.proxy != "")
+		if err == nil && status != 429 && status != 403 {
+			break
+		}
 	}
-	req, err := http.NewRequest(http.MethodGet, appBase+"/api/auth/get-session", nil)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	// Header set/order copied from a real browser's get-session call (HAR): a
-	// same-origin GET carries NO origin header and DOES carry the ua client hints
-	// + priority — sending origin while omitting the hints is exactly the shape
-	// Vercel's checkpoint 429s.
-	req.Header = http.Header{
-		"accept":             {"*/*"},
-		"accept-language":    {"en-US,en;q=0.9"},
-		"cache-control":      {"no-cache"},
-		"cookie":             {send},
-		"pragma":             {"no-cache"},
-		"priority":           {"u=1, i"},
-		"referer":            {appBase + "/"},
-		"sec-ch-ua":          {secChUA},
-		"sec-ch-ua-mobile":   {"?0"},
-		"sec-ch-ua-platform": {`"Windows"`},
-		"sec-fetch-dest":     {"empty"},
-		"sec-fetch-mode":     {"cors"},
-		"sec-fetch-site":     {"same-origin"},
-		"user-agent":         {userAgent},
-		http.HeaderOrderKey: {
-			"accept", "accept-language", "cache-control", "cookie", "pragma",
-			"priority", "referer", "sec-ch-ua", "sec-ch-ua-mobile",
-			"sec-ch-ua-platform", "sec-fetch-dest", "sec-fetch-mode",
-			"sec-fetch-site", "user-agent",
-		},
-	}
-	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %s", ErrTemporaryUpstream, err.Error())
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
 	// Only a real app answer may rotate the stored cookie. The 403/429 人机校验 页
 	// also sends Set-Cookie (often CLEARING better-auth cookies), and persisting
 	// that would strip the session_data cache — after which get-session answers
 	// 200 null and a perfectly healthy account looks dead.
-	if resp.StatusCode == 200 {
-		if merged := mergeCookies(send, resp.Header["Set-Cookie"]); merged != send && keepsSession(merged) {
+	if status == 200 {
+		if merged := mergeCookies(send, setCookies); merged != send && keepsSession(merged) {
 			c.mu.Lock()
 			c.rotated[cookie] = merged
 			c.mu.Unlock()
 			send = merged
 		}
 	}
-	if resp.StatusCode == 401 {
+	if status == 401 {
 		return nil, fmt.Errorf("%w: get-session http 401: %s", ErrAuth, clip(body, 160))
 	}
-	if resp.StatusCode != 200 {
+	if status != 200 {
 		// 403 / 429 here is the Vercel / Cloudflare 人机校验 页，不是 cookie 失效 —
 		// 当成临时错误，否则健康的号会被误判死。
-		return nil, fmt.Errorf("%w: get-session http %d: %s", ErrTemporaryUpstream, resp.StatusCode, clip(body, 160))
+		return nil, fmt.Errorf("%w: get-session http %d: %s", ErrTemporaryUpstream, status, clip(body, 160))
 	}
 	var raw struct {
 		Session struct {
@@ -295,6 +283,53 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 		c.mu.Unlock()
 	}
 	return sess, nil
+}
+
+// fetchSession performs one get-session call and returns its status, body and
+// Set-Cookie headers.
+func (c *Client) fetchSession(ctx context.Context, cookie string, useProxy bool) (int, []byte, []string, error) {
+	client, err := c.newTLSClientP(useProxy)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	req, err := http.NewRequest(http.MethodGet, appBase+"/api/auth/get-session", nil)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	req = req.WithContext(ctx)
+	// Header set/order copied from a real browser's get-session call (HAR): a
+	// same-origin GET carries NO origin header and DOES carry the ua client hints
+	// + priority — sending origin while omitting the hints is exactly the shape
+	// Vercel's checkpoint 429s.
+	req.Header = http.Header{
+		"accept":             {"*/*"},
+		"accept-language":    {"en-US,en;q=0.9"},
+		"cache-control":      {"no-cache"},
+		"cookie":             {cookie},
+		"pragma":             {"no-cache"},
+		"priority":           {"u=1, i"},
+		"referer":            {appBase + "/"},
+		"sec-ch-ua":          {secChUA},
+		"sec-ch-ua-mobile":   {"?0"},
+		"sec-ch-ua-platform": {`"Windows"`},
+		"sec-fetch-dest":     {"empty"},
+		"sec-fetch-mode":     {"cors"},
+		"sec-fetch-site":     {"same-origin"},
+		"user-agent":         {userAgent},
+		http.HeaderOrderKey: {
+			"accept", "accept-language", "cache-control", "cookie", "pragma",
+			"priority", "referer", "sec-ch-ua", "sec-ch-ua-mobile",
+			"sec-ch-ua-platform", "sec-fetch-dest", "sec-fetch-mode",
+			"sec-fetch-site", "user-agent",
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, body, resp.Header["Set-Cookie"], nil
 }
 
 // session returns the cookie's access token, optionally forcing a fresh mint
