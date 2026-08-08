@@ -105,7 +105,7 @@ async function doSmartImport() {
           <strong class="text-slate-700">Cookie 数组</strong>(多 Adobe 批量)、
           <strong class="text-slate-700">ChatGPT JWT</strong>(<code class="px-1 bg-slate-100 rounded">eyJhbGciOi...</code>)、
           <strong class="text-slate-700">Runway JWT</strong>(自动与 ChatGPT 区分)、
-          <strong class="text-slate-700">Leonardo Cookie</strong>(含 better-auth)、
+          <strong class="text-slate-700">Leonardo Cookie</strong>(须含 better-auth.session_data)、
           <strong class="text-slate-700">Krea Cookie</strong>(含 sb-superb-auth)、
           <strong class="text-slate-700">Imagine Token</strong>(<code class="px-1 bg-slate-100 rounded">{"token","refreshToken","email","parentId"}</code>)、
           <strong class="text-slate-700">Grok SSO</strong>(grok.com 的 <code class="px-1 bg-slate-100 rounded">sso</code> 值,仅含 session_id,自动与 ChatGPT/Runway 区分)、

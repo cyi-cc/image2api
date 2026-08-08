@@ -125,7 +125,7 @@ func (r *TokenRepository) ReserveQuota(ctx context.Context, pool, id string, amo
 }
 
 // Grok accounts carry a forced local quota instead of an upstream balance:
-// Console 没有额度接口，所以导入时写死 图 5 / 视频 2，用一次扣一次，两个都归零直接判死。
+// Console 没有额度接口，所以导入时写死 图 5 / 视频 2，下单预扣、失败退回，两个都归零直接判死。
 const (
 	GrokImageQuotaKey = "grok_image_remaining"
 	GrokVideoQuotaKey = "grok_video_remaining"
@@ -133,46 +133,113 @@ const (
 	GrokVideoQuota    = 2
 )
 
-// ConsumeGrokQuota deducts one unit from a grok account's local per-kind quota
-// under a row lock. Zeroed kinds are flagged (image_limited / video_limited) so
-// scheduling skips them; once both are zero the account is dead (no reset time —
-// 用完就废).
-func (r *TokenRepository) ConsumeGrokQuota(ctx context.Context, id, kind string) error {
+// grokQuotas reads an account's local per-kind counters, falling back to the
+// forced defaults for accounts imported before the counters existed.
+func grokQuotas(meta datatypes.JSONMap) (images, videos int) {
+	images, known := metaInt(meta, GrokImageQuotaKey)
+	if !known {
+		images = GrokImageQuota
+	}
+	videos, known = metaInt(meta, GrokVideoQuotaKey)
+	if !known {
+		videos = GrokVideoQuota
+	}
+	return images, videos
+}
+
+// ReserveGrokQuota pre-deducts one unit of a grok account's local per-kind quota
+// under a row lock, so concurrent orders on the same near-empty account can't
+// over-commit it（下单即扣，不会超扣）。allowed=false 表示这一份已经用光，调用方换号。
+// 归零的那一份打上 image_limited / video_limited 让调度跳过；判死留给
+// FinalizeGrokQuota（生成真的成功了才锁号），失败时用 RefundGrokQuota 退回。
+func (r *TokenRepository) ReserveGrokQuota(ctx context.Context, id, kind string) (allowed bool, err error) {
+	err = r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var item model.TokenAccount
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&item, "pool = ? AND id = ?", "grok", id).Error; e != nil {
+			return e
+		}
+		images, videos := grokQuotas(item.Meta)
+		if kind == "video" {
+			if videos <= 0 {
+				return nil
+			}
+			videos--
+		} else {
+			if images <= 0 {
+				return nil
+			}
+			images--
+		}
+		meta := cloneMeta(item.Meta)
+		meta[GrokImageQuotaKey] = images
+		meta[GrokVideoQuotaKey] = videos
+		if e := tx.Model(&model.TokenAccount{}).
+			Where("pool = ? AND id = ?", "grok", id).
+			Updates(map[string]any{
+				"meta":          meta,
+				"image_limited": images <= 0,
+				"video_limited": videos <= 0,
+				"updated_at":    time.Now(),
+			}).Error; e != nil {
+			return e
+		}
+		allowed = true
+		return nil
+	})
+	return allowed, err
+}
+
+// RefundGrokQuota gives back a unit reserved by ReserveGrokQuota when the render
+// failed, clearing that kind's limited flag again. Capped at the forced default so
+// repeated refunds can't inflate the quota.
+func (r *TokenRepository) RefundGrokQuota(ctx context.Context, id, kind string) error {
 	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var item model.TokenAccount
 		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			First(&item, "pool = ? AND id = ?", "grok", id).Error; e != nil {
 			return e
 		}
-		images, known := metaInt(item.Meta, GrokImageQuotaKey)
-		if !known {
-			images = GrokImageQuota
-		}
-		videos, known := metaInt(item.Meta, GrokVideoQuotaKey)
-		if !known {
-			videos = GrokVideoQuota
-		}
+		images, videos := grokQuotas(item.Meta)
 		if kind == "video" {
-			videos = max(0, videos-1)
+			videos = min(videos+1, GrokVideoQuota)
 		} else {
-			images = max(0, images-1)
+			images = min(images+1, GrokImageQuota)
 		}
 		meta := cloneMeta(item.Meta)
 		meta[GrokImageQuotaKey] = images
 		meta[GrokVideoQuotaKey] = videos
-		patch := map[string]any{
-			"meta":          meta,
-			"image_limited": images <= 0,
-			"video_limited": videos <= 0,
-			"updated_at":    time.Now(),
+		return tx.Model(&model.TokenAccount{}).
+			Where("pool = ? AND id = ?", "grok", id).
+			Updates(map[string]any{
+				"meta":          meta,
+				"image_limited": images <= 0,
+				"video_limited": videos <= 0,
+				"updated_at":    time.Now(),
+			}).Error
+	})
+}
+
+// FinalizeGrokQuota locks an account down once a successful generation left both
+// local counters at zero (no reset time — 用完就废).
+func (r *TokenRepository) FinalizeGrokQuota(ctx context.Context, id string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var item model.TokenAccount
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&item, "pool = ? AND id = ?", "grok", id).Error; e != nil {
+			return e
 		}
-		if images <= 0 && videos <= 0 {
-			patch["status"] = "disabled"
-			patch["dead"] = true
+		images, videos := grokQuotas(item.Meta)
+		if images > 0 || videos > 0 {
+			return nil
 		}
 		return tx.Model(&model.TokenAccount{}).
 			Where("pool = ? AND id = ?", "grok", id).
-			Updates(patch).Error
+			Updates(map[string]any{
+				"status":     "disabled",
+				"dead":       true,
+				"updated_at": time.Now(),
+			}).Error
 	})
 }
 

@@ -126,7 +126,19 @@ const supportsBoth = computed(() => { const m = model.value; return m && m.refer
 const refMode = ref(refModeDefault.value)
 watch(refModeDefault, (v) => { refMode.value = v })
 
+// 预设里声明的音/视频参考上限（未声明 = null，走 seedance 默认值）
+const maxVideosRaw = computed(() => {
+  const n = familyPreset.value?.max_videos
+  return n === undefined || n === null ? null : Number(n)
+})
+const maxAudiosRaw = computed(() => {
+  const n = familyPreset.value?.max_audios
+  return n === undefined || n === null ? null : Number(n)
+})
 const isSeedanceModel = computed(() => /^seedance/.test(model.value?.id || ''))
+// 支持图片以外的参考资产（视频/音频）的模型：seedance 系 + 预设声明了音视频上限的
+const supportsMediaRefs = computed(() =>
+  isSeedanceModel.value || maxVideosRaw.value > 0 || maxAudiosRaw.value > 0)
 
 const perSecondRate = computed(() => {
   if (mode.value !== 'video' || !model.value) return null
@@ -220,13 +232,35 @@ function openPicker() { fileInput.value && fileInput.value.click() }
 // here at pick time so an oversized image fails fast with a clear message instead
 // of charging + failing upstream after the upload.
 const MAX_REF_BYTES = 20 * 1024 * 1024
-// seedance 参考图模式各类上限
-const MAX_VIDEOS = 3
-const MAX_AUDIOS = 3
+// seedance 参考图模式各类上限（预设可覆盖：Leonardo 私有 seedance 只吃 1 段音频）
+const maxImages = computed(() => Number(familyPreset.value?.max_images) || maxRefs.value)
+const maxVideos = computed(() => (maxVideosRaw.value === null ? 3 : maxVideosRaw.value))
+const maxAudios = computed(() => (maxAudiosRaw.value === null ? 3 : maxAudiosRaw.value))
+// Leonardo 私有 seedance：单个视频参考 3-10 秒，总时长须短于 15 秒。
+// 服务端同样校验，这里只是提交前先拦一下，避免白跑一次生成。
+function videoRefDurationError() {
+  if (mode.value !== 'video' || familyPreset.value?.provider !== 'leonardo') return ''
+  const vids = refImages.value.filter((r) => r.fileType === 'video')
+  for (const v of vids) {
+    if (v.duration && (v.duration < 3 || v.duration > 10))
+      return `单个视频参考需 3-10 秒：${v.name} 为 ${v.duration.toFixed(1)} 秒`
+  }
+  const vTotal = vids.reduce((n, v) => n + (v.duration || 0), 0)
+  if (vids.length && vTotal >= 15) return `视频参考总时长 ${vTotal.toFixed(1)} 秒，需短于 15 秒`
+  const audioLimit = Number(familyPreset.value?.max_audio_seconds) || 0
+  if (audioLimit > 0) {
+    const aTotal = refImages.value
+      .filter((r) => r.fileType === 'audio')
+      .reduce((n, a) => n + (a.duration || 0), 0)
+    if (aTotal > audioLimit)
+      return `音频参考总时长 ${aTotal.toFixed(1)} 秒，最多 ${audioLimit} 秒`
+  }
+  return ''
+}
 
 // seedance 参考图（非首尾帧）模式下允许图片/视频/音频
 const fileAccept = computed(() => {
-  if (isSeedanceModel.value && refMode.value !== 'frame' && mode.value === 'video')
+  if (supportsMediaRefs.value && refMode.value !== 'frame' && mode.value === 'video')
     return 'image/*,video/*,audio/*'
   return 'image/*'
 })
@@ -246,7 +280,7 @@ function onFiles(ev) {
 // Shared by the file picker AND drag-and-drop. Honors per-model max + per-type
 // limits (image/video/audio) + 20MB cap.
 function addFiles(files) {
-  const allowMedia = isSeedanceModel.value && refMode.value !== 'frame' && mode.value === 'video'
+  const allowMedia = supportsMediaRefs.value && refMode.value !== 'frame' && mode.value === 'video'
   const tooBig = []
   for (const f of files) {
     if (!f || !f.type) continue
@@ -257,8 +291,9 @@ function addFiles(files) {
     if (refImages.value.length >= maxRefs.value) break
     if (f.size > MAX_REF_BYTES) { tooBig.push(f.name); continue }
     const { imgs, vids, auds } = refCounts.value
-    if (isVideo && vids >= MAX_VIDEOS) continue
-    if (isAudio && auds >= MAX_AUDIOS) continue
+    if (isVideo && vids >= maxVideos.value) continue
+    if (isAudio && auds >= maxAudios.value) continue
+    if (isImage && allowMedia && imgs >= maxImages.value) continue
     const fileType = isVideo ? 'video' : isAudio ? 'audio' : 'image'
     if (isImage) {
       makeThumb(f).then((thumb) => {
@@ -500,6 +535,8 @@ async function run() {
     error.value = '该视频模型需要至少 1 张参考图 (首帧)'
     return
   }
+  const refErr = videoRefDurationError()
+  if (refErr) { error.value = refErr; return }
   if (price.value == null) {
     error.value = '该参数组合未定价 (留空 = 不支持)'
     return
@@ -869,7 +906,7 @@ onUnmounted(() => {
         <label class="block text-xs font-medium text-slate-500 mb-1.5">
           {{ refMode === 'frame' && mode === 'video' ? '首尾帧' : '参考图' }}
           <span class="text-slate-400 font-normal">
-            (最多 {{ maxRefs }} 张{{ isSeedanceModel && refMode !== 'frame' && mode === 'video' ? ` · 图片${refCounts.imgs}/${maxRefs} · 视频${refCounts.vids}/${MAX_VIDEOS} · 音频${refCounts.auds}/${MAX_AUDIOS}` : '' }}{{ refMode === 'frame' && mode === 'video' ? (maxRefs >= 2 ? ' · 首帧/末帧' : ' · 首帧') : '' }} · 单文件 ≤20MB)
+            (最多 {{ maxRefs }} 张{{ supportsMediaRefs && refMode !== 'frame' && mode === 'video' ? ` · 图片${refCounts.imgs}/${maxImages} · 视频${refCounts.vids}/${maxVideos} · 音频${refCounts.auds}/${maxAudios}` : '' }}{{ refMode === 'frame' && mode === 'video' ? (maxRefs >= 2 ? ' · 首帧/末帧' : ' · 首帧') : '' }} · 单文件 ≤20MB)
           </span>
           <span v-if="refsRequired" class="text-rose-500">*</span>
         </label>

@@ -788,6 +788,8 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 		videoBytes, videoURL, execErr = s.generateRunwayVideo(genCtx, eventID, modelItem, in, aspectRatio, parseDurationSeconds(duration), !urlOnly)
 	case "grok":
 		videoBytes, videoURL, execErr = s.generateGrokVideo(genCtx, eventID, modelItem, in, aspectRatio, resolution, parseDurationSeconds(duration), !urlOnly)
+	case "leonardo":
+		videoBytes, videoURL, execErr = s.generateLeonardoVideo(genCtx, eventID, modelItem, in, aspectRatio, parseDurationSeconds(duration), !urlOnly)
 	case "custom":
 		videoBytes, videoURL, execErr = s.generateCustomVideo(genCtx, eventID, modelItem, in, aspectRatio, resolution, parseDurationSeconds(duration), !urlOnly)
 	default:
@@ -801,11 +803,11 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 		switch {
 		case errors.Is(execErr, ErrNoProviderAccount):
 			return nil, ErrNoProviderAccount
-		case errors.Is(execErr, adobe.ErrAuth), errors.Is(execErr, runway.ErrAuth), errors.Is(execErr, grok.ErrAuth), errors.Is(execErr, custom.ErrAuth):
+		case errors.Is(execErr, adobe.ErrAuth), errors.Is(execErr, runway.ErrAuth), errors.Is(execErr, grok.ErrAuth), errors.Is(execErr, leonardo.ErrAuth), errors.Is(execErr, custom.ErrAuth):
 			return nil, ErrProviderAuth
-		case errors.Is(execErr, adobe.ErrQuotaExhausted), errors.Is(execErr, runway.ErrQuotaExhausted), errors.Is(execErr, grok.ErrQuotaExhausted), errors.Is(execErr, custom.ErrQuotaExhausted):
+		case errors.Is(execErr, adobe.ErrQuotaExhausted), errors.Is(execErr, runway.ErrQuotaExhausted), errors.Is(execErr, grok.ErrQuotaExhausted), errors.Is(execErr, leonardo.ErrQuotaExhausted), errors.Is(execErr, custom.ErrQuotaExhausted):
 			return nil, ErrProviderQuota
-		case errors.Is(execErr, adobe.ErrTemporaryUpstream), errors.Is(execErr, runway.ErrTemporaryUpstream), errors.Is(execErr, grok.ErrTemporaryUpstream), errors.Is(execErr, custom.ErrTemporaryUpstream):
+		case errors.Is(execErr, adobe.ErrTemporaryUpstream), errors.Is(execErr, runway.ErrTemporaryUpstream), errors.Is(execErr, grok.ErrTemporaryUpstream), errors.Is(execErr, leonardo.ErrTemporaryUpstream), errors.Is(execErr, custom.ErrTemporaryUpstream):
 			return nil, ErrProviderTemporary
 		default:
 			return nil, fmt.Errorf("%w: %v", ErrProviderExecution, execErr)
@@ -955,6 +957,8 @@ func (s *V1Service) runVideoJob(ctx context.Context, principal *APIPrincipal, in
 		_, videoURL, execErr = s.generateRunwayVideo(genCtx, eventID, modelItem, in, aspectRatio, parseDurationSeconds(duration), false)
 	case "grok":
 		_, videoURL, execErr = s.generateGrokVideo(genCtx, eventID, modelItem, in, aspectRatio, resolution, parseDurationSeconds(duration), false)
+	case "leonardo":
+		_, videoURL, execErr = s.generateLeonardoVideo(genCtx, eventID, modelItem, in, aspectRatio, parseDurationSeconds(duration), false)
 	case "custom":
 		_, videoURL, execErr = s.generateCustomVideo(genCtx, eventID, modelItem, in, aspectRatio, resolution, parseDurationSeconds(duration), false)
 	default:
@@ -1344,6 +1348,13 @@ func (s *V1Service) prepareVideo(ctx context.Context, principal *APIPrincipal, i
 		}
 		if n != 1 {
 			return nil, "", "", "", 0, errors.New("runway 图生视频需要且仅需 1 张首帧图")
+		}
+	}
+	// Leonardo seedance 的参考资产分三类且各有上限/时长限制,在扣费前拦掉,
+	// 不让请求带着非法参考走到上游。
+	if modelItem.Provider == "leonardo" {
+		if _, err := classifyLeonardoVideoRefs(in.ReferenceImages, leonardoVideoSpecOf(modelItem.ID)); err != nil {
+			return nil, "", "", "", 0, err
 		}
 	}
 	aspectRatio := strings.TrimSpace(strings.ReplaceAll(in.AspectRatio, "x", ":"))
@@ -2285,8 +2296,9 @@ func upstreamQuality(resolution string) string {
 // generateGrokVideo runs grok's imagine video pipeline across the grok pool,
 // via Grok Console (console.x.ai) — the same sso account, but the clean JSON
 // media API instead of the anti-bot gated grok.com website flow.
-// 额度是本地写死的（每号 图 5 / 视频 2）：视频计数归零的号不再调度，成功一次扣一个，
-// 图/视频都归零直接判死；auth / 额度错误同样判死换号（grok sso 不续期，失效就失效）。
+// 额度是本地写死的（每号 图 5 / 视频 2）：视频计数归零的号不再调度，下单先预扣一个、
+// 失败退回（并发不超扣），图/视频都归零直接判死；auth / 额度错误同样判死换号
+// （grok sso 不续期，失效就失效）。
 func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, modelItem *model.ModelConfig, in V1VideoRequest, aspectRatio, resolution string, durationSeconds int, downloadResult bool) ([]byte, string, error) {
 	if s.grok == nil {
 		return nil, "", errors.New("grok client not configured")
@@ -2341,6 +2353,11 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 			defer s.acctRelease(ctx, token.ID, eventID)
 			_ = s.events.SetAccount(ctx, eventID, token.ID, token.AccountEmail)
 			_ = s.tokens.TouchLastUsed(ctx, token.ID)
+			// 下单先预扣本地额度（并发时不会超扣），失败再退回。
+			allowed, reserveErr := s.tokens.ReserveGrokQuota(ctx, token.ID, "video")
+			if reserveErr != nil || !allowed {
+				return false, true
+			}
 			d, meta, genErr := s.grok.GenerateConsoleVideo(ctx, token.Value, in.Prompt, aspectRatio, res, durationSeconds, frames, downloadResult)
 			if genErr == nil {
 				_, _ = s.tokens.Update(ctx, "grok", token.ID, map[string]any{
@@ -2348,12 +2365,13 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 					"success_total": gorm.Expr("success_total + 1"),
 					"fails":         0,
 				})
-				// 本地额度各扣各的；图/视频都归零时账号直接判死。
-				_ = s.tokens.ConsumeGrokQuota(ctx, token.ID, "video")
+				// 图/视频都归零时账号直接判死。
+				_ = s.tokens.FinalizeGrokQuota(ctx, token.ID)
 				data = d
 				videoURL = strings.TrimSpace(stringValue(meta["video_url"]))
 				return true, false
 			}
+			_ = s.tokens.RefundGrokQuota(ctx, token.ID, "video")
 			lastErr = genErr
 			switch {
 			case errors.Is(genErr, grok.ErrAuth), errors.Is(genErr, grok.ErrQuotaExhausted):
@@ -2437,6 +2455,11 @@ func (s *V1Service) generateGrokImage(ctx context.Context, eventID string, model
 			defer s.acctRelease(ctx, token.ID, eventID)
 			_ = s.events.SetAccount(ctx, eventID, token.ID, token.AccountEmail)
 			_ = s.tokens.TouchLastUsed(ctx, token.ID)
+			// 下单先预扣本地额度（并发时不会超扣），失败再退回。
+			allowed, reserveErr := s.tokens.ReserveGrokQuota(ctx, token.ID, "image")
+			if reserveErr != nil || !allowed {
+				return false, true
+			}
 			d, meta, genErr := s.grok.GenerateConsoleImage(ctx, token.Value, in.Prompt, aspectRatio, resolution, refs, urlOnly)
 			if genErr == nil {
 				_, _ = s.tokens.Update(ctx, "grok", token.ID, map[string]any{
@@ -2444,12 +2467,13 @@ func (s *V1Service) generateGrokImage(ctx context.Context, eventID string, model
 					"success_total": gorm.Expr("success_total + 1"),
 					"fails":         0,
 				})
-				// 本地额度各扣各的；图/视频都归零时账号直接判死。
-				_ = s.tokens.ConsumeGrokQuota(ctx, token.ID, "image")
+				// 图/视频都归零时账号直接判死。
+				_ = s.tokens.FinalizeGrokQuota(ctx, token.ID)
 				data = d
 				artURL = strings.TrimSpace(stringValue(meta["image_url"]))
 				return true, false
 			}
+			_ = s.tokens.RefundGrokQuota(ctx, token.ID, "image")
 			lastErr = genErr
 			switch {
 			case errors.Is(genErr, grok.ErrAuth), errors.Is(genErr, grok.ErrQuotaExhausted):
@@ -2786,8 +2810,9 @@ func (s *V1Service) generateLeonardoImage(ctx context.Context, eventID string, m
 		return nil, "", err
 	}
 
-	// token.Value is the cookie; GenerateImage mints a fresh JWT each attempt, so an
-	// auth failure means the cookie itself is dead — no refresher (nil).
+	// token.Value is the cookie; GenerateImage mints a fresh JWT each attempt (and
+	// re-mints it internally when the bearer is rejected), so an auth failure means
+	// the cookie itself no longer authenticates — no refresher (nil).
 	var imageURL string
 	data, err := s.runPoolWithFailover(ctx, eventID, "leonardo", active, "image", func(token model.TokenAccount) ([]byte, error) {
 		// Atomically pre-deduct the per-generation cost so concurrent picks of the
@@ -2801,6 +2826,7 @@ func (s *V1Service) generateLeonardoImage(ctx context.Context, eventID string, m
 			return nil, leonardo.ErrQuotaExhausted
 		}
 		data, meta, genErr := s.leonardo.GenerateImage(ctx, token.Value, upstreamModel, in.Prompt, width, height, nil, refs, !urlOnly)
+		cookie := s.leonardoPersistCookie(ctx, token.ID, token.Value)
 		if genErr != nil {
 			// Release the hold so a failed render doesn't burn credits.
 			if deducted {
@@ -2811,12 +2837,216 @@ func (s *V1Service) generateLeonardoImage(ctx context.Context, eventID string, m
 		imageURL = strings.TrimSpace(stringValue(meta["image_url"]))
 		// Success → overwrite the held value with the REAL upstream balance and
 		// sink to 限额 if below the floor (best-effort; never fails a done render).
-		s.reconcileLeonardoCredits(ctx, token.ID, token.Value)
+		s.reconcileLeonardoCredits(ctx, token.ID, cookie)
 		return data, nil
 	}, func(e error) (bool, bool, bool, bool) {
 		return errors.Is(e, leonardo.ErrAuth), errors.Is(e, leonardo.ErrQuotaExhausted), errors.Is(e, leonardo.ErrTemporaryUpstream), false
 	}, nil, true)
 	return data, imageURL, err
+}
+
+// leonardoPrivateSuffix 标记目录里 Leonardo 私有视频模型(public:false 生成)的
+// 后缀,上游 slug 就是去掉它之后的 id。
+const leonardoPrivateSuffix = "-不卡人脸"
+
+// leonardoVideoSpec 描述一个 Leonardo 视频模型的上游 slug、输出尺寸和参考资产
+// 限制(各类上限 + 时长约束),校验在扣费前跑,免得非法参考白扣积分。
+type leonardoVideoSpec struct {
+	upstream string
+	// long/short 是长边/短边像素,按比例组合成 16:9 或 9:16。
+	long  int
+	short int
+	maxImages int
+	maxAudios int
+	maxVideos int
+	// 视频参考单个时长区间与总时长上限(秒),0 表示不限。
+	videoMinSeconds   float64
+	videoMaxSeconds   float64
+	videoTotalSeconds float64
+	// 音频参考总时长上限(秒),0 表示不限。
+	audioTotalSeconds float64
+}
+
+var leonardoVideoSpecs = map[string]leonardoVideoSpec{
+	"seedance-2.0" + leonardoPrivateSuffix: {
+		upstream: "seedance-2.0", long: 1280, short: 720,
+		maxImages: 4, maxAudios: 1, maxVideos: 3,
+		videoMinSeconds: 3, videoMaxSeconds: 10, videoTotalSeconds: 15,
+	},
+	"seedance-2.0-fast" + leonardoPrivateSuffix: {
+		upstream: "seedance-2.0-fast", long: 1280, short: 720,
+		maxImages: 4, maxAudios: 1, maxVideos: 3,
+		videoMinSeconds: 3, videoMaxSeconds: 10, videoTotalSeconds: 15,
+	},
+	"minimax-h3": {
+		upstream: "hailuo-03", long: 2560, short: 1440,
+		maxImages: 5, maxAudios: 3, maxVideos: 0,
+		audioTotalSeconds: 15,
+	},
+}
+
+func leonardoVideoSpecOf(modelID string) leonardoVideoSpec {
+	id := strings.TrimSpace(modelID)
+	if spec, ok := leonardoVideoSpecs[id]; ok {
+		return spec
+	}
+	// 目录里新增的同族模型退化成 seedance 规格,上游 slug 取去掉私有后缀的 id。
+	return leonardoVideoSpec{
+		upstream: strings.TrimSuffix(id, leonardoPrivateSuffix), long: 1280, short: 720,
+		maxImages: 4, maxAudios: 1, maxVideos: 3,
+		videoMinSeconds: 3, videoMaxSeconds: 10, videoTotalSeconds: 15,
+	}
+}
+
+// dimensions 按比例返回像素尺寸,只支持 16:9 / 9:16。
+func (spec leonardoVideoSpec) dimensions(aspectRatio string) (int, int) {
+	if strings.TrimSpace(aspectRatio) == "9:16" {
+		return spec.short, spec.long
+	}
+	return spec.long, spec.short
+}
+
+// classifyLeonardoVideoRefs decodes the mixed reference payload (画图台把图片/
+// 音频/视频一起塞进 reference_images)并按类型分流,同时按模型规格校验各类上限和
+// 时长。
+func classifyLeonardoVideoRefs(inputs []string, spec leonardoVideoSpec) (leonardo.VideoAssets, error) {
+	var refs leonardo.VideoAssets
+	decoded, err := decodeReferenceImages(inputs, spec.maxImages+spec.maxAudios+spec.maxVideos)
+	if err != nil {
+		return refs, err
+	}
+	var videoTotal, audioTotal float64
+	for _, ref := range decoded {
+		switch detectMediaType(ref) {
+		case "video":
+			if spec.maxVideos == 0 {
+				return refs, errors.New("该模型不支持视频参考")
+			}
+			secs := leonardo.MediaDurationSeconds(ref)
+			if secs <= 0 {
+				return refs, errors.New("无法解析视频参考的时长,请换一个 mp4")
+			}
+			if secs < spec.videoMinSeconds || secs > spec.videoMaxSeconds {
+				return refs, fmt.Errorf("单个视频参考需 %.0f-%.0f 秒,当前 %.1f 秒",
+					spec.videoMinSeconds, spec.videoMaxSeconds, secs)
+			}
+			videoTotal += secs
+			if spec.videoTotalSeconds > 0 && videoTotal >= spec.videoTotalSeconds {
+				return refs, fmt.Errorf("视频参考总时长 %.1f 秒,需短于 %.0f 秒",
+					videoTotal, spec.videoTotalSeconds)
+			}
+			refs.Videos = append(refs.Videos, ref)
+		case "audio":
+			if spec.maxAudios == 0 {
+				return refs, errors.New("该模型不支持音频参考")
+			}
+			secs := leonardo.MediaDurationSeconds(ref)
+			if spec.audioTotalSeconds > 0 {
+				if secs <= 0 {
+					return refs, errors.New("无法解析音频参考的时长,请换一个 mp3")
+				}
+				audioTotal += secs
+				if audioTotal > spec.audioTotalSeconds {
+					return refs, fmt.Errorf("音频参考总时长 %.1f 秒,最多 %.0f 秒",
+						audioTotal, spec.audioTotalSeconds)
+				}
+			}
+			refs.Audios = append(refs.Audios, ref)
+		default:
+			refs.Images = append(refs.Images, ref)
+		}
+	}
+	switch {
+	case len(refs.Images) > spec.maxImages:
+		return refs, fmt.Errorf("最多 %d 张参考图", spec.maxImages)
+	case len(refs.Audios) > spec.maxAudios:
+		return refs, fmt.Errorf("最多 %d 段音频参考", spec.maxAudios)
+	case len(refs.Videos) > spec.maxVideos:
+		return refs, fmt.Errorf("最多 %d 段视频参考", spec.maxVideos)
+	}
+	return refs, nil
+}
+
+// generateLeonardoVideo renders a Leonardo video across the leonardo pool. Mirrors
+// generateLeonardoImage (cookie → JWT, quota reserve, cookie 轮换持久化), only the
+// upstream call differs: 私有生成 + 三类参考资产 + motionMP4URL。
+func (s *V1Service) generateLeonardoVideo(ctx context.Context, eventID string, modelItem *model.ModelConfig, in V1VideoRequest, aspectRatio string, durationSeconds int, downloadResult bool) ([]byte, string, error) {
+	if s.leonardo == nil {
+		return nil, "", errors.New("leonardo client not configured")
+	}
+	if s.settings != nil {
+		if proxy, err := s.settings.GetValue(ctx, "proxy.url"); err == nil {
+			s.leonardo.SetProxy(proxy)
+		}
+	}
+	spec := leonardoVideoSpecOf(modelItem.ID)
+	refs, err := classifyLeonardoVideoRefs(in.ReferenceImages, spec)
+	if err != nil {
+		return nil, "", err
+	}
+
+	items, err := s.tokens.ListByPool(ctx, "leonardo")
+	if err != nil {
+		return nil, "", err
+	}
+	var active []model.TokenAccount
+	for _, item := range items {
+		if item.Status != "active" || item.Dead || strings.TrimSpace(item.Value) == "" {
+			continue
+		}
+		if rem, ok := jsonMapInt(item.Meta, "cached_quota_remaining"); ok && rem < leonardoMinCredits {
+			continue
+		}
+		active = append(active, item)
+	}
+	active = pinTestAccount(items, active, in.AccountID)
+	if len(active) == 0 {
+		return nil, "", ErrNoProviderAccount
+	}
+	s.rotateRoundRobin("leonardo", active)
+
+	width, height := spec.dimensions(aspectRatio)
+
+	var videoURL string
+	data, err := s.runPoolWithFailover(ctx, eventID, "leonardo", active, "video", func(token model.TokenAccount) ([]byte, error) {
+		allowed, deducted, rerr := s.tokens.ReserveQuota(ctx, "leonardo", token.ID, leonardoMinCredits)
+		if rerr != nil {
+			return nil, fmt.Errorf("%w: reserve: %v", leonardo.ErrTemporaryUpstream, rerr)
+		}
+		if !allowed {
+			return nil, leonardo.ErrQuotaExhausted
+		}
+		data, meta, genErr := s.leonardo.GenerateVideo(ctx, token.Value, spec.upstream, in.Prompt, width, height, durationSeconds, refs, downloadResult)
+		cookie := s.leonardoPersistCookie(ctx, token.ID, token.Value)
+		if genErr != nil {
+			if deducted {
+				_ = s.tokens.RefundQuota(ctx, "leonardo", token.ID, leonardoMinCredits)
+			}
+			return nil, genErr
+		}
+		videoURL = strings.TrimSpace(stringValue(meta["video_url"]))
+		s.reconcileLeonardoCredits(ctx, token.ID, cookie)
+		return data, nil
+	}, func(e error) (bool, bool, bool, bool) {
+		return errors.Is(e, leonardo.ErrAuth), errors.Is(e, leonardo.ErrQuotaExhausted), errors.Is(e, leonardo.ErrTemporaryUpstream), false
+	}, nil, true)
+	return data, videoURL, err
+}
+
+// leonardoPersistCookie writes back the account cookie when Leonardo rotated its
+// better-auth session_data cache (that cache is what actually authenticates
+// get-session, so a stale copy would eventually look like a dead account).
+// Returns the value now stored.
+func (s *V1Service) leonardoPersistCookie(ctx context.Context, tokenID, cookie string) string {
+	if s.leonardo == nil {
+		return cookie
+	}
+	fresh, ok := s.leonardo.RotatedCookie(cookie)
+	if !ok || strings.TrimSpace(fresh) == "" {
+		return cookie
+	}
+	_, _ = s.tokens.Update(ctx, "leonardo", tokenID, map[string]any{"value": fresh})
+	return fresh
 }
 
 // reconcileLeonardoCredits re-fetches an account's real token balance after a

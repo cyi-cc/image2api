@@ -52,7 +52,14 @@ var (
 	// applies, but callers can single it out — unlike an expired access token this
 	// cannot be fixed by refreshing from the cookie, so the account is done.
 	ErrNotEntitled = fmt.Errorf("%w: user not entitled", ErrAuth)
+	// errTransport marks a request that never got a response back (EOF / 连接被切 /
+	// 超时)。上游没收到就没开始生成，所以原地换条连接重试是安全的。
+	errTransport = errors.New("transport failure")
 )
+
+// videoSubmitMaxRetries is how many extra in-place attempts a video submit gets
+// when the connection dies before any response arrives (EOF/reset/timeout).
+const videoSubmitMaxRetries = 3
 
 // isContentRejection reports whether an Adobe response (status + body) is a
 // content-safety refusal rather than a genuine upstream/account failure. Adobe
@@ -314,7 +321,22 @@ func (c *Client) GenerateVideo(ctx context.Context, token, engine, prompt, aspec
 	if engine == "firefly-video" {
 		endpoint = fireflyVideoSubmitURL
 	}
+	// 连接在拿到响应前就断掉（EOF / reset / 超时）说明上游根本没收到这单，
+	// 换一条新连接原地重试，最多 videoSubmitMaxRetries 次。
 	respBody, pollURL, err := c.submitVideo(ctx, submitSess, token, endpoint, payload)
+	for attempt := 0; err != nil && errors.Is(err, errTransport) && attempt < videoSubmitMaxRetries && ctx.Err() == nil; attempt++ {
+		select {
+		case <-ctx.Done():
+			return nil, nil, ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 2 * time.Second):
+		}
+		retrySess, sessErr := c.newTLSClient()
+		if sessErr != nil {
+			break
+		}
+		submitSess = retrySess
+		respBody, pollURL, err = c.submitVideo(ctx, submitSess, token, endpoint, payload)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -743,7 +765,7 @@ func (c *Client) submitVideo(ctx context.Context, sess *tlsSession, token, endpo
 
 	resp, err := sess.client.Do(req)
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: %v", ErrTemporaryUpstream, err)
+		return nil, "", fmt.Errorf("%w: %w: %v", ErrTemporaryUpstream, errTransport, err)
 	}
 	defer resp.Body.Close()
 

@@ -341,6 +341,11 @@ func (s *TokenService) ImportLeonardoCookie(ctx context.Context, cookie, tokenID
 	if !leonardo.IsLeonardoCookie(cookie) {
 		return nil, errors.New("not a leonardo cookie")
 	}
+	// get-session 认的是 better-auth 的 session_data 缓存 cookie：只有 session_token
+	// 时它返回 200 null（换不到 accessToken），和死号一模一样，所以导入就拦掉。
+	if !leonardo.HasSessionData(cookie) {
+		return nil, errors.New("leonardo cookie 缺少 __Secure-better-auth.session_data，请复制完整 cookie")
+	}
 	if tokenID == "" {
 		tokenID = newTokenID("leonardo")
 	}
@@ -371,6 +376,18 @@ func (s *TokenService) ImportLeonardoCookie(ctx context.Context, cookie, tokenID
 	return item, nil
 }
 
+// persistLeonardoCookie writes back the account cookie when Leonardo rotated its
+// better-auth session_data cache — that cache is what authenticates get-session,
+// so keeping a stale copy would eventually look like a dead account.
+func (s *TokenService) persistLeonardoCookie(ctx context.Context, tokenID, cookie string) {
+	if s.leonardo == nil {
+		return
+	}
+	if fresh, ok := s.leonardo.RotatedCookie(cookie); ok && strings.TrimSpace(fresh) != "" {
+		_, _ = s.tokens.Update(ctx, "leonardo", tokenID, map[string]any{"value": fresh})
+	}
+}
+
 // checkPendingLeonardo validates a freshly imported Leonardo cookie off-thread:
 // get-session must succeed (else the cookie is dead → disabled), then it hydrates
 // email/display-name + the token balance and the daily renewal time (so the
@@ -392,6 +409,7 @@ func (s *TokenService) checkPendingLeonardo(tokenID, cookie string) {
 	}
 	s.applyProxy(ctx)
 	data, err := s.leonardo.FetchCreditsBalance(ctx, cookie)
+	s.persistLeonardoCookie(ctx, tokenID, cookie)
 	if err != nil {
 		if errors.Is(err, leonardo.ErrAuth) {
 			s.finishPending(ctx, "leonardo", tokenID, "disabled", true, nil)
@@ -1448,6 +1466,7 @@ func (s *TokenService) Quota(ctx context.Context, pool, id string) (map[string]a
 	if poolToType(item.Pool) == "leonardo" && s.leonardo != nil {
 		s.applyProxy(ctx)
 		data, err := s.leonardo.FetchCreditsBalance(ctx, item.Value)
+		s.persistLeonardoCookie(ctx, item.ID, item.Value)
 		if err != nil {
 			if errors.Is(err, leonardo.ErrAuth) {
 				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
