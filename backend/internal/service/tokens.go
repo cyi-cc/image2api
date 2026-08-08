@@ -1114,6 +1114,24 @@ func (s *TokenService) ImportCustomAccount(ctx context.Context, baseURL, apiKey,
 	return item, nil
 }
 
+// leonardoAuthStrikeLimit 是 leonardo 号被判死前允许的连续鉴权失败次数。上游偶发
+// 返回 200 null / 401(cookie 轮换竞态、人机校验)时一次就判死会误杀健康号，所以要
+// 连续失败到这个次数才判死；任何一次成功都会清零。
+const leonardoAuthStrikeLimit = 3
+
+// leonardoAuthStrike 记一次鉴权失败：返回要写回的 meta、当前连续失败次数,以及是否
+// 该判死。
+func leonardoAuthStrike(item *model.TokenAccount, reason string) (datatypes.JSONMap, int, bool) {
+	meta := cloneJSONMap(item.Meta)
+	strikes := 1
+	if n, ok := jsonMapInt(item.Meta, "auth_fails"); ok {
+		strikes = n + 1
+	}
+	meta["auth_fails"] = strikes
+	meta["last_auth_error"] = reason
+	return meta, strikes, strikes >= leonardoAuthStrikeLimit
+}
+
 // finishPending writes the terminal status/dead flag and clears the pending_check
 // marker (merging any cached quota) for a background import probe.
 func (s *TokenService) finishPending(ctx context.Context, pool, id, status string, dead bool, quotaMeta map[string]any) {
@@ -1469,17 +1487,23 @@ func (s *TokenService) Quota(ctx context.Context, pool, id string) (map[string]a
 		s.persistLeonardoCookie(ctx, item.ID, item.Value)
 		if err != nil {
 			if errors.Is(err, leonardo.ErrAuth) {
-				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
-					"status": "disabled",
-					"dead":   true,
-					"fails":  gorm.Expr("fails + 1"),
-				})
+				meta, strikes, kill := leonardoAuthStrike(item, "quota refresh: "+err.Error())
+				patch := map[string]any{"meta": meta, "fails": gorm.Expr("fails + 1")}
+				if kill {
+					patch["status"] = "disabled"
+					patch["dead"] = true
+					log.Printf("account leonardo/%s disabled after %d consecutive auth failures: %v", item.ID, strikes, err)
+				} else {
+					log.Printf("leonardo %s: auth failure %d/%d on quota refresh (%v) — kept active", item.ID, strikes, leonardoAuthStrikeLimit, err)
+				}
+				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, patch)
 			}
 			return nil, err
 		}
 		patch := map[string]any{}
 		meta := cloneJSONMap(item.Meta)
 		meta["cached_quota_at"] = int(time.Now().Unix())
+		meta["auth_fails"] = 0 // cookie 还能换 token，连续失败计数清零
 		if remaining, ok := data["remaining"].(int); ok {
 			meta["cached_quota_remaining"] = remaining
 			// Below the per-generation floor → sink to "限额" so it stops being

@@ -30,6 +30,9 @@ const (
 	graphqlURL    = "https://api.leonardo.ai/v1/graphql"
 	schemaVersion = "1.255.2"
 	userAgent     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+	// sec-ch-ua must agree with userAgent's major version — a mismatch is itself a
+	// bot signal.
+	secChUA = `"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"`
 )
 
 var (
@@ -137,6 +140,14 @@ func mergeCookies(cookie string, setCookies []string) string {
 	return strings.Join(out, "; ")
 }
 
+// keepsSession reports whether a merged cookie still carries BOTH components
+// get-session needs: the session token and better-auth's session_data cache.
+// A merge that loses either one (a Set-Cookie clearing a cache chunk) must be
+// discarded — sending it would answer 200 null, i.e. look like a dead account.
+func keepsSession(cookie string) bool {
+	return strings.Contains(cookie, "__Secure-better-auth.session_token") && HasSessionData(cookie)
+}
+
 // Session is the result of /api/auth/get-session: the short-lived bearer plus the
 // ids the GraphQL API needs (cognitoSub for the quota query, userId for the feed
 // and the CDN image path) and the human-facing account fields.
@@ -187,19 +198,30 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 		return nil, err
 	}
 	req = req.WithContext(ctx)
+	// Header set/order copied from a real browser's get-session call (HAR): a
+	// same-origin GET carries NO origin header and DOES carry the ua client hints
+	// + priority — sending origin while omitting the hints is exactly the shape
+	// Vercel's checkpoint 429s.
 	req.Header = http.Header{
-		"accept":          {"*/*"},
-		"accept-language": {"en-US,en;q=0.9"},
-		"cookie":          {send},
-		"origin":          {appBase},
-		"referer":         {appBase + "/"},
-		"user-agent":      {userAgent},
-		"sec-fetch-dest":  {"empty"},
-		"sec-fetch-mode":  {"cors"},
-		"sec-fetch-site":  {"same-origin"},
+		"accept":             {"*/*"},
+		"accept-language":    {"en-US,en;q=0.9"},
+		"cache-control":      {"no-cache"},
+		"cookie":             {send},
+		"pragma":             {"no-cache"},
+		"priority":           {"u=1, i"},
+		"referer":            {appBase + "/"},
+		"sec-ch-ua":          {secChUA},
+		"sec-ch-ua-mobile":   {"?0"},
+		"sec-ch-ua-platform": {`"Windows"`},
+		"sec-fetch-dest":     {"empty"},
+		"sec-fetch-mode":     {"cors"},
+		"sec-fetch-site":     {"same-origin"},
+		"user-agent":         {userAgent},
 		http.HeaderOrderKey: {
-			"accept", "accept-language", "cookie", "origin", "referer",
-			"user-agent", "sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site",
+			"accept", "accept-language", "cache-control", "cookie", "pragma",
+			"priority", "referer", "sec-ch-ua", "sec-ch-ua-mobile",
+			"sec-ch-ua-platform", "sec-fetch-dest", "sec-fetch-mode",
+			"sec-fetch-site", "user-agent",
 		},
 	}
 	resp, err := client.Do(req)
@@ -208,14 +230,20 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if merged := mergeCookies(send, resp.Header["Set-Cookie"]); merged != send {
-		c.mu.Lock()
-		c.rotated[cookie] = merged
-		c.mu.Unlock()
-		send = merged
+	// Only a real app answer may rotate the stored cookie. The 403/429 人机校验 页
+	// also sends Set-Cookie (often CLEARING better-auth cookies), and persisting
+	// that would strip the session_data cache — after which get-session answers
+	// 200 null and a perfectly healthy account looks dead.
+	if resp.StatusCode == 200 {
+		if merged := mergeCookies(send, resp.Header["Set-Cookie"]); merged != send && keepsSession(merged) {
+			c.mu.Lock()
+			c.rotated[cookie] = merged
+			c.mu.Unlock()
+			send = merged
+		}
 	}
 	if resp.StatusCode == 401 {
-		return nil, ErrAuth
+		return nil, fmt.Errorf("%w: get-session http 401: %s", ErrAuth, clip(body, 160))
 	}
 	if resp.StatusCode != 200 {
 		// 403 / 429 here is the Vercel / Cloudflare 人机校验 页，不是 cookie 失效 —
@@ -240,8 +268,10 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 		return nil, fmt.Errorf("%w: get-session non-json", ErrTemporaryUpstream)
 	}
 	if strings.TrimSpace(raw.Session.AccessToken) == "" {
-		// No bearer despite 200 → the cookie no longer authenticates.
-		return nil, ErrAuth
+		// No bearer despite 200 → the cookie no longer authenticates. Carry the body
+		// so the log says WHICH shape it was (null session vs a session without a
+		// token) instead of a bare "auth failed".
+		return nil, fmt.Errorf("%w: get-session 200 without accessToken: %s", ErrAuth, clip(body, 160))
 	}
 	uid := raw.Session.UserID
 	if uid == "" {
@@ -276,6 +306,14 @@ func (c *Client) session(ctx context.Context, cookie string, force bool) (*Sessi
 		c.mu.Unlock()
 	}
 	return c.GetSession(ctx, cookie)
+}
+
+// ProbeSession force-mints a session from the cookie, bypassing the cached
+// bearer. Callers use it to double-check an auth failure before killing an
+// account: a rejected bearer (rotation race / expired token) still yields a
+// working cookie here, only a genuinely dead cookie returns ErrAuth.
+func (c *Client) ProbeSession(ctx context.Context, cookie string) (*Session, error) {
+	return c.session(ctx, cookie, true)
 }
 
 // callGraphQL runs one GraphQL call for an account cookie. The bearer only lives
@@ -411,7 +449,11 @@ func (c *Client) graphqlP(ctx context.Context, accessToken string, payload []byt
 		"accept":               {"*/*"},
 		"accept-language":      {"en-US,en;q=0.9"},
 		"origin":               {appBase},
+		"priority":             {"u=1, i"},
 		"referer":              {appBase + "/"},
+		"sec-ch-ua":            {secChUA},
+		"sec-ch-ua-mobile":     {"?0"},
+		"sec-ch-ua-platform":   {`"Windows"`},
 		"user-agent":           {userAgent},
 		"authorization":        {"Bearer " + accessToken},
 		"x-leo-schema-version": {schemaVersion},
@@ -419,7 +461,8 @@ func (c *Client) graphqlP(ctx context.Context, accessToken string, payload []byt
 		"sec-fetch-mode":       {"cors"},
 		"sec-fetch-site":       {"same-site"},
 		http.HeaderOrderKey: {
-			"content-type", "accept", "accept-language", "origin", "referer",
+			"content-type", "accept", "accept-language", "origin", "priority",
+			"referer", "sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform",
 			"user-agent", "authorization", "x-leo-schema-version",
 			"sec-fetch-dest", "sec-fetch-mode", "sec-fetch-site",
 		},

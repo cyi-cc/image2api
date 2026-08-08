@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -3762,9 +3763,30 @@ func (s *V1Service) markTokenFailure(ctx context.Context, pool string, token mod
 		// grok is intentionally excluded: a grok sso can momentarily 401 while
 		// still valid (upstream blip / proxy / anti-bot), so an auth failure just
 		// fails over for this request without permanently killing the account.
-		if pool == "chatgpt" || pool == "runway" || pool == "leonardo" || pool == "krea" || pool == "imagine" {
+		disable := pool == "chatgpt" || pool == "runway" || pool == "leonardo" || pool == "krea" || pool == "imagine"
+		if disable && pool == "leonardo" {
+			// 两道保险：先重新 get-session 复核（单次失败常是 bearer 轮换竞态），复核
+			// 也不过就只记一次连续失败，连续到上限才判死。
+			if s.leonardoCookieAlive(ctx, token) {
+				log.Printf("leonardo %s: auth failure on %s but cookie still authenticates — kept active", token.ID, kind)
+				disable = false
+			} else {
+				meta, strikes, kill := leonardoAuthStrike(&token, "auth failure on "+kind)
+				patch["meta"] = meta
+				disable = kill
+				if kill {
+					log.Printf("account leonardo/%s disabled after %d consecutive auth failures: %s", token.ID, strikes, kind)
+				} else {
+					log.Printf("leonardo %s: auth failure %d/%d on %s — kept active", token.ID, strikes, leonardoAuthStrikeLimit, kind)
+				}
+			}
+		}
+		if disable {
 			patch["status"] = "disabled"
 			patch["dead"] = true
+			if pool != "leonardo" {
+				log.Printf("account %s/%s disabled: auth failure on %s", pool, token.ID, kind)
+			}
 		}
 	default:
 		// Neither pool is auto-disabled on generic (non-auth / non-quota) failures
@@ -3773,6 +3795,24 @@ func (s *V1Service) markTokenFailure(ctx context.Context, pool string, token mod
 		// the token dead in the isAuth case above; that is a genuinely dead token.)
 	}
 	_, _ = s.tokens.Update(ctx, pool, token.ID, patch)
+}
+
+// leonardoCookieAlive re-checks a Leonardo cookie after an auth failure by
+// force-minting a session (bypassing the cached bearer). Only a cookie that
+// still fails to authenticate counts as dead; a temporary upstream answer
+// (403/429 人机校验) also keeps the account alive.
+func (s *V1Service) leonardoCookieAlive(ctx context.Context, token model.TokenAccount) bool {
+	if s.leonardo == nil || strings.TrimSpace(token.Value) == "" {
+		return false
+	}
+	probeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	sess, err := s.leonardo.ProbeSession(probeCtx, token.Value)
+	if err == nil && sess != nil && strings.TrimSpace(sess.AccessToken) != "" {
+		s.leonardoPersistCookie(probeCtx, token.ID, token.Value)
+		return true
+	}
+	return !errors.Is(err, leonardo.ErrAuth)
 }
 
 // markTokenDead disables an account and marks it dead on a fatal upstream error
