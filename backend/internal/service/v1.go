@@ -1506,8 +1506,8 @@ func (s *V1Service) finishUnimplementedEvent(ctx context.Context, eventID string
 }
 
 // videoGenBudget caps one video render end-to-end (submit + poll + download).
-// 上游慢的时候（seedance 长镜头）12 分钟不够，统一给 20 分钟。
-const videoGenBudget = 20 * time.Minute
+// 上游慢的时候（seedance 长镜头）12 分钟不够，统一给 30 分钟。
+const videoGenBudget = 30 * time.Minute
 
 // grokConcurrencyPerAccount is how many simultaneous generations one grok account
 // may run (grok tolerates 10, unlike the 1-per-account default elsewhere).

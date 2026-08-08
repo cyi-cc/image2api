@@ -46,7 +46,7 @@ const (
 	consoleMaxEditImages = 3
 
 	consoleVideoPollEvery = 2 * time.Second
-	consoleVideoDeadline  = 20 * time.Minute
+	consoleVideoDeadline  = 30 * time.Minute
 )
 
 // consoleSession is one minted DPoP token plus the key it is bound to. skew is
