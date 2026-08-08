@@ -7,6 +7,7 @@ import { copyText } from '../utils/clipboard'
 import { zipSync } from 'fflate'
 import Icon from '../components/Icon.vue'
 import MediaLightbox from '../components/MediaLightbox.vue'
+import Mascot from '../components/Mascot.vue'
 
 const router = useRouter()
 
@@ -247,18 +248,18 @@ onUnmounted(() => {
     <div class="card p-3 flex items-center gap-3 flex-wrap">
       <div class="flex items-center gap-1.5">
         <button @click="setKind('')" class="text-xs rounded-lg px-2.5 py-1.5 transition-colors"
-                :class="kindFilter === '' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">全部</button>
+                :class="kindFilter === '' ? 'chip-on' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">全部</button>
         <button @click="setKind('image')" class="text-xs rounded-lg px-2.5 py-1.5 transition-colors"
-                :class="kindFilter === 'image' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">图像</button>
+                :class="kindFilter === 'image' ? 'chip-on' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">图像</button>
         <button @click="setKind('video')" class="text-xs rounded-lg px-2.5 py-1.5 transition-colors"
-                :class="kindFilter === 'video' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">视频</button>
+                :class="kindFilter === 'video' ? 'chip-on' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">视频</button>
       </div>
       <div class="flex-1 min-w-[180px]">
         <input v-model="search" @keyup.enter="doSearch" @change="doSearch"
                class="field !py-1.5 text-xs" placeholder="搜索提示词或模型…" />
       </div>
       <button @click="togglePickAll" class="text-xs rounded-lg px-2.5 py-1.5 transition-colors inline-flex items-center gap-1"
-              :class="pageAllPicked ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
+              :class="pageAllPicked ? 'chip-on' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
         <Icon name="check" class="w-3.5 h-3.5" /> 全选本页
       </button>
       <template v-if="picked.size">
@@ -274,10 +275,11 @@ onUnmounted(() => {
     <!-- Empty -->
     <div v-if="loading && !items.length" class="card text-center text-sm text-slate-400 py-24">加载中…</div>
     <div v-else-if="!filtered.length"
-         class="card flex flex-col items-center gap-3 text-slate-400 py-24">
-      <span class="w-14 h-14 rounded-2xl bg-slate-100 grid place-items-center"><Icon name="spark" class="w-6 h-6" /></span>
-      <span class="text-sm">还没有创作记录</span>
-      <button @click="router.push('/user')" class="btn-soft mt-2">开始第一张</button>
+         class="anime-card relative overflow-hidden flex flex-col items-center gap-3 text-[color:var(--fg-3)] py-20">
+      <div class="anime-stars"></div>
+      <Mascot :size="120" />
+      <span class="text-sm">还没有创作记录，画一张试试吧～</span>
+      <button @click="router.push('/user')" class="bubble-btn mt-1">开始第一张 ✦</button>
     </div>
 
     <!-- Cards — gallery layout, matching 图片管理 (ImagesView) -->

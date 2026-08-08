@@ -8,6 +8,7 @@ import { api, jsonBody } from '../api'
 import { openPayment } from '../payment'
 import { refreshMe } from '../auth'
 import Icon from '../components/Icon.vue'
+import Mascot from '../components/Mascot.vue'
 
 const router = useRouter()
 const items = ref([])
@@ -105,7 +106,7 @@ async function cont(o) {
         <button v-for="s in [['','全部'],['pending','待支付'],['paid','已支付'],['cancelled','已取消']]" :key="s[0]"
                 @click="setStatus(s[0])"
                 class="text-xs rounded-lg px-2.5 py-1.5 transition-colors"
-                :class="status === s[0] ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">{{ s[1] }}</button>
+                :class="status === s[0] ? 'chip-on' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">{{ s[1] }}</button>
       </div>
       <div class="flex-1 min-w-[180px]">
         <input v-model="search" @keyup.enter="doSearch" @change="doSearch"
@@ -115,9 +116,10 @@ async function cont(o) {
     </div>
 
     <div v-if="loading && !items.length" class="card text-center text-sm text-slate-400 py-24">加载中…</div>
-    <div v-else-if="!total" class="card flex flex-col items-center gap-3 text-slate-400 py-24">
-      <span class="w-14 h-14 rounded-2xl bg-slate-100 grid place-items-center"><Icon name="log" class="w-6 h-6" /></span>
-      <span class="text-sm">还没有充值订单</span>
+    <div v-else-if="!total" class="anime-card relative overflow-hidden flex flex-col items-center gap-3 text-[color:var(--fg-3)] py-20">
+      <div class="anime-stars"></div>
+      <Mascot :size="120" />
+      <span class="text-sm">还没有充值订单～</span>
     </div>
 
     <div v-else class="card overflow-hidden !p-0">

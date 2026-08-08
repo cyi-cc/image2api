@@ -5,7 +5,6 @@
 import { ref, computed, onMounted } from 'vue'
 import { auth } from '../auth'
 import { api } from '../api'
-import { points } from '../credits'
 import Icon from '../components/Icon.vue'
 
 const base = computed(() => location.origin)            // /v1 is same-origin (dev: Vite proxy)
@@ -25,6 +24,11 @@ function pubName(m) {
 const sampleImage = computed(() => pubName(imageModels.value[0]) || 'firefly-image-4')
 const sampleVideo = computed(() => pubName(videoModels.value[0]) || 'firefly-kling3')
 const sampleSeconds = computed(() => String(videoModels.value[0]?.durations?.[0] || '8s').replace(/s$/, ''))
+
+function modeEmpty(m) {
+  if (m.type === 'image') return !(m.resolutions || []).length && !m.image_to_image && !(m.ratios || []).length
+  return !(m.resolutions || []).length && !(m.durations || []).length && !m.max_reference_images && !(m.ratios || []).length
+}
 
 function priceOf(m) {
   if (m.type === 'video') {
@@ -59,7 +63,8 @@ const videoParams = [
   ['prompt', 'string', '必填', '文字描述'],
   ['seconds', 'string|int', '必填', '时长秒数,如 "5" "8"(取决于模型支持)'],
   ['size', 'string', '可选', '如 "1280x720" / "720x1280" → 决定比例与分辨率'],
-  ['input_reference', 'file', '可选', '首帧/参考图(multipart 文件;runway 图生视频必填 1 张)'],
+  ['input_reference', 'file', '可选', '参考图/首尾帧(multipart 文件上传;多张时重复 input_reference[] 字段)。runway 图生视频必填 1 张,张数上限见上方模型表'],
+  ['reference_mode', 'string', '可选', '参考图用途:"frame"=首尾帧(最多 2 张,第 1 张为首帧、第 2 张为尾帧,只传 1 张即仅首帧),"asset"=普通参考图。留空用模型默认;仅支持单一模式的模型不可传'],
 ]
 
 // ---- size → 比例 × 分辨率档 对照表(用 size 该传的值)----
@@ -224,8 +229,8 @@ async function copy(text) {
 <template>
   <div class="theme-text space-y-10">
     <header>
-      <div class="text-[10px] uppercase tracking-[0.3em] text-sky-300/70 font-medium">开发者</div>
-      <h1 class="mt-2 text-4xl md:text-5xl font-bold tracking-tight">接口文档</h1>
+      <span class="sticker">✦ 开发者</span>
+      <h1 class="mt-3 text-4xl md:text-5xl font-bold tracking-tight">接口文档</h1>
       <p class="text-white/45 mt-2">完全兼容 OpenAI 接口规范 — 改个 <code class="text-white/70">base_url</code> 和 <code class="text-white/70">api_key</code> 即可直接调用。图像 / 视频 / 图生图全支持。</p>
     </header>
 
@@ -269,18 +274,33 @@ async function copy(text) {
             <tr class="text-left text-[11px] uppercase tracking-wider text-white/40 border-b border-white/[0.08]">
               <th class="px-4 py-3 font-medium">model</th>
               <th class="px-4 py-3 font-medium">类型</th>
-              <th class="px-4 py-3 font-medium">分辨率 / 时长</th>
-              <th class="px-4 py-3 font-medium text-right">价格</th>
+              <th class="px-4 py-3 font-medium">能力</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="m in models" :key="m.id" class="border-b border-white/[0.04] last:border-0">
               <td class="px-4 py-3 font-mono text-white/90">{{ pubName(m) }}</td>
               <td class="px-4 py-3 text-white/60">{{ m.type === 'video' ? '视频' : '图像' }}</td>
-              <td class="px-4 py-3 text-white/60">{{ (m.type === 'video' ? m.durations : m.resolutions || [])?.join(' · ') || '—' }}</td>
-              <td class="px-4 py-3 text-right tabular-nums text-white/80">{{ priceOf(m) }}</td>
+              <td class="px-4 py-3">
+                <div class="flex flex-wrap items-center gap-1 text-[11px]">
+                  <template v-if="m.type === 'image'">
+                    <span v-for="r in (m.resolutions || [])" :key="r" class="cap cap-k">{{ r }}</span>
+                  </template>
+                  <template v-if="m.type === 'video'">
+                    <span v-for="r in (m.resolutions || [])" :key="r" class="cap cap-k">{{ r }}</span>
+                    <span v-if="(m.durations || []).length >= 2" class="cap cap-dur">{{ m.durations[0] }}–{{ m.durations[m.durations.length - 1] }}</span>
+                    <span v-else-if="(m.durations || []).length === 1" class="cap cap-dur">{{ m.durations[0] }}</span>
+                  </template>
+                  <span v-if="m.reference_mode === 'frame' && m.max_reference_images > 0" class="cap cap-frame">首尾帧 {{ Math.min(m.max_reference_images, 2) }}</span>
+                  <span v-if="m.reference_mode === 'frame' && m.max_reference_images > 2" class="cap cap-ref">参考图 {{ m.max_reference_images }}</span>
+                  <span v-else-if="m.reference_mode && m.reference_mode !== 'none' && m.reference_mode !== 'frame' && m.max_reference_images > 0" class="cap cap-ref">参考图 {{ m.max_reference_images }}</span>
+                  <span v-if="m.type === 'image' && m.image_to_image && (!m.reference_mode || m.reference_mode === 'none')" class="cap cap-ref">参考图 1</span>
+                  <span v-for="r in (m.ratios || [])" :key="'rt'+r" class="cap cap-ratio">{{ r.replace(':', '×') }}</span>
+                  <span v-if="modeEmpty(m)" class="text-white/30">—</span>
+                </div>
+              </td>
             </tr>
-            <tr v-if="!models.length"><td colspan="4" class="px-4 py-10 text-center text-white/35">暂无可用模型</td></tr>
+            <tr v-if="!models.length"><td colspan="3" class="px-4 py-10 text-center text-white/35">暂无可用模型</td></tr>
           </tbody>
         </table>
       </div>
@@ -408,14 +428,15 @@ async function copy(text) {
     <!-- examples -->
     <section class="space-y-4">
       <h2 class="text-lg font-semibold">调用示例</h2>
-      <div v-for="ex in examples" :key="ex.title" class="card overflow-hidden">
-        <div class="flex items-center justify-between px-4 py-2.5 border-b border-white/[0.06]">
-          <span class="text-xs text-white/55">{{ ex.title }}</span>
-          <button @click="copy(ex.code)" class="text-xs text-white/50 hover:text-white inline-flex items-center gap-1.5 transition-colors">
+      <div v-for="ex in examples" :key="ex.title" class="code-card">
+        <div class="code-card-bar">
+          <span class="code-dots" aria-hidden="true"><i class="dot dot-r"></i><i class="dot dot-y"></i><i class="dot dot-g"></i></span>
+          <span class="code-card-title">{{ ex.title }}</span>
+          <button @click="copy(ex.code)" class="code-copy">
             <Icon name="copy" class="w-3.5 h-3.5" /> 复制
           </button>
         </div>
-        <pre class="p-4 text-[12px] leading-relaxed text-white/80 overflow-auto"><code>{{ ex.code }}</code></pre>
+        <pre class="code-card-body"><code>{{ ex.code }}</code></pre>
       </div>
     </section>
 
@@ -460,4 +481,57 @@ async function copy(text) {
 html.dark .badge-get { background: rgb(16 185 129 / 0.15); color: rgb(110 231 183); box-shadow: inset 0 0 0 1px rgb(52 211 153 / 0.3); }
 html.dark .badge-post { background: rgb(14 165 233 / 0.15); color: rgb(125 211 252); box-shadow: inset 0 0 0 1px rgb(56 189 248 / 0.3); }
 html.dark .badge-err { background: rgb(244 63 94 / 0.15); color: rgb(253 164 175); box-shadow: inset 0 0 0 1px rgb(251 113 133 / 0.3); }
+
+.cap { display: inline-flex; align-items: center; padding: 0.18rem 0.55rem; font-size: 0.7rem; border-radius: 9999px; white-space: nowrap; }
+.cap-k { background: rgb(16 185 129 / 0.12); color: rgb(4 120 87); box-shadow: inset 0 0 0 1px rgb(16 185 129 / 0.3); }
+.cap-dur { background: rgb(99 102 241 / 0.12); color: rgb(55 48 163); box-shadow: inset 0 0 0 1px rgb(99 102 241 / 0.3); }
+.cap-frame { background: rgb(236 72 153 / 0.12); color: rgb(159 18 57); box-shadow: inset 0 0 0 1px rgb(236 72 153 / 0.3); }
+.cap-ref { background: rgb(16 185 129 / 0.12); color: rgb(4 120 87); box-shadow: inset 0 0 0 1px rgb(16 185 129 / 0.3); }
+.cap-media { background: rgb(245 158 11 / 0.12); color: rgb(146 64 14); box-shadow: inset 0 0 0 1px rgb(245 158 11 / 0.3); }
+.cap-ratio { background: rgb(100 116 139 / 0.1); color: rgb(51 65 85); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; box-shadow: inset 0 0 0 1px rgb(100 116 139 / 0.25); }
+html.dark .cap-k { background: rgb(16 185 129 / 0.18); color: rgb(110 231 183); box-shadow: inset 0 0 0 1px rgb(52 211 153 / 0.4); }
+html.dark .cap-dur { background: rgb(99 102 241 / 0.18); color: rgb(165 180 252); box-shadow: inset 0 0 0 1px rgb(129 140 248 / 0.4); }
+html.dark .cap-frame { background: rgb(236 72 153 / 0.18); color: rgb(244 114 182); box-shadow: inset 0 0 0 1px rgb(244 114 182 / 0.45); }
+html.dark .cap-ref { background: rgb(16 185 129 / 0.18); color: rgb(110 231 183); box-shadow: inset 0 0 0 1px rgb(52 211 153 / 0.4); }
+html.dark .cap-media { background: rgb(245 158 11 / 0.18); color: rgb(252 211 77); box-shadow: inset 0 0 0 1px rgb(252 211 77 / 0.45); }
+html.dark .cap-ratio { background: rgb(255 255 255 / 0.06); color: rgb(255 255 255 / 0.65); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12); }
+
+/* 苹果风代码卡片：自带深色配色，不随页面主题切换，深/浅背景下都可读 */
+.code-card {
+  border-radius: 14px; overflow: hidden;
+  background: #1d1d1f;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.25), 0 8px 24px rgb(0 0 0 / 0.18), inset 0 0 0 1px rgb(255 255 255 / 0.08);
+}
+.code-card-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px;
+  background: linear-gradient(180deg, #333336, #2a2a2d);
+  border-bottom: 1px solid rgb(0 0 0 / 0.4);
+}
+.code-dots { display: inline-flex; gap: 6px; }
+.code-dots .dot { width: 11px; height: 11px; border-radius: 9999px; display: inline-block; }
+.dot-r { background: #ff5f57; box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.15); }
+.dot-y { background: #febc2e; box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.15); }
+.dot-g { background: #28c840; box-shadow: inset 0 0 0 0.5px rgb(0 0 0 / 0.15); }
+.code-card-title {
+  flex: 1; min-width: 0; text-align: center;
+  font-size: 12px; color: rgb(255 255 255 / 0.55);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.code-copy {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 12px; line-height: 1;
+  color: rgb(255 255 255 / 0.6);
+  background: rgb(255 255 255 / 0.08);
+  border-radius: 7px; padding: 5px 9px;
+  transition: background 0.15s, color 0.15s;
+}
+.code-copy:hover { color: #fff; background: rgb(255 255 255 / 0.16); }
+.code-card-body {
+  margin: 0; padding: 14px 16px;
+  font-size: 12px; line-height: 1.7;
+  color: #e8e8ed;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
 </style>

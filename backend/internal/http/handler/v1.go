@@ -129,10 +129,10 @@ func (h *V1Handler) CreateVideo(c *gin.Context) {
 		h.writeAuthError(c, err)
 		return
 	}
-	var modelID, prompt, seconds, size string
+	var modelID, prompt, seconds, size, referenceMode string
 	var refs []string
 	if strings.HasPrefix(c.GetHeader("Content-Type"), "multipart/form-data") {
-		if err := c.Request.ParseMultipartForm(64 << 20); err != nil {
+		if err := c.Request.ParseMultipartForm(256 << 20); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid multipart form"})
 			return
 		}
@@ -140,17 +140,17 @@ func (h *V1Handler) CreateVideo(c *gin.Context) {
 		prompt = c.PostForm("prompt")
 		seconds = c.PostForm("seconds")
 		size = c.PostForm("size")
+		referenceMode = c.PostForm("reference_mode")
 		refs = readMultipartImages(c, "input_reference", "input_reference[]")
 	} else {
 		var body struct {
-			Model   string          `json:"model"`
-			Prompt  string          `json:"prompt"`
-			Seconds json.RawMessage `json:"seconds"`
-			Size    string          `json:"size"`
-			// Reference frames (image-to-video / first-last frames) as base64 or
-			// data-URI strings — the JSON equivalent of multipart input_reference.
-			InputReference  []string `json:"input_reference"`
-			ReferenceImages []string `json:"reference_images"`
+			Model           string          `json:"model"`
+			Prompt          string          `json:"prompt"`
+			Seconds         json.RawMessage `json:"seconds"`
+			Size            string          `json:"size"`
+			ReferenceMode   string          `json:"reference_mode"`
+			InputReference  []string        `json:"input_reference"`
+			ReferenceImages []string        `json:"reference_images"`
 		}
 		if err := c.ShouldBindJSON(&body); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request body"})
@@ -158,6 +158,7 @@ func (h *V1Handler) CreateVideo(c *gin.Context) {
 		}
 		modelID, prompt, size = body.Model, body.Prompt, body.Size
 		seconds = rawToString(body.Seconds)
+		referenceMode = strings.TrimSpace(body.ReferenceMode)
 		refs = append(body.InputReference, body.ReferenceImages...)
 	}
 	duration := strings.TrimSpace(seconds)
@@ -172,6 +173,7 @@ func (h *V1Handler) CreateVideo(c *gin.Context) {
 		AspectRatio:     aspect,
 		Resolution:      resolution,
 		ReferenceImages: refs,
+		ReferenceMode:   referenceMode,
 		BaseURL:         requestBaseURL(c),
 	})
 	if err != nil {

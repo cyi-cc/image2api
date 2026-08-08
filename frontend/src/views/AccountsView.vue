@@ -35,6 +35,7 @@ function applyEdit(payload) {
 
 const typeFilter = ref('')      // '' | 'openai' | 'adobe' | 'runway' | 'leonardo'
 const statusFilter = ref('')    // '' | 'active' | 'quota' | 'disabled'
+const planFilter = ref('')      // '' | 'vip' | 'free' | 'sub' | 'master'
 const search = ref('')
 
 const page = ref(1)
@@ -70,6 +71,14 @@ function typePill(t) {
     imagine: 'bg-teal-500/10 text-teal-300 ring-teal-400/30',
   }[t] || 'bg-white/[0.06] text-white/70 ring-white/15'
 }
+// 与后端 accountConcurrency 保持一致：adobe 普号固定 1 并发，会员号取配置值
+// (未配置时默认 5)；custom 上游取配置值 (默认 1)；grok 固定 10，其余 1。
+function acctConcurrency(a) {
+  if (a.type === 'adobe') return a.plan === 'free' ? 1 : (Number(a.concurrency) || 5)
+  if (a.type === 'custom') return Number(a.concurrency) || 1
+  return a.type === 'grok' ? 10 : 1
+}
+
 const STATUS_LABEL = { active: '正常', quota: '额度耗尽', disabled: '已禁用', pending: '检测中' }
 
 // Server-side pagination: rows IS the current page, already filtered/sorted
@@ -112,6 +121,7 @@ function buildQs() {
   })
   if (typeFilter.value) qs.set('type', typeFilter.value)
   if (statusFilter.value) qs.set('status', statusFilter.value)
+  if (planFilter.value && typeFilter.value === 'adobe') qs.set('plan', planFilter.value)
   if (search.value.trim()) qs.set('q', search.value.trim())
   return qs.toString()
 }
@@ -249,7 +259,12 @@ function applyQuota(row, result) {
   if (result.unknown && result.remaining === null) { row.remaining = null; row._unknown = true; return }
   row._unknown = false
   row.remaining = result.remaining
+  if (result.image_remaining !== undefined) row.image_remaining = result.image_remaining
+  if (result.video_remaining !== undefined) row.video_remaining = result.video_remaining
   row.reset_after = result.reset_after
+  // 会员身份随额度一起回写：改过会员/掉了会员的号，查一次额度徽章就跟着更新。
+  if (result.plan !== undefined) row.plan = result.plan
+  if (result.sub_account !== undefined) row.sub_account = result.sub_account
 }
 
 async function toggleAccountStatus(pool, id, current) {
@@ -372,6 +387,15 @@ onMounted(() => { loadAccounts(); loadModelList() })
           <span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>已禁用
         </button>
       </div>
+      <template v-if="typeFilter === 'adobe'">
+      <div class="w-px h-5 bg-white/10"></div>
+      <div class="flex items-center gap-1">
+        <button @click="setFilter(() => planFilter = '')" class="fp" :class="planFilter === '' && 'fp-on'">全部账号</button>
+        <button @click="setFilter(() => planFilter = 'free')" class="fp" :class="planFilter === 'free' && 'fp-slate'">普号</button>
+        <button @click="setFilter(() => planFilter = 'sub')" class="fp" :class="planFilter === 'sub' && 'fp-sky'">子号</button>
+        <button @click="setFilter(() => planFilter = 'master')" class="fp" :class="planFilter === 'master' && 'fp-purple'">会员号</button>
+      </div>
+      </template>
       <div class="flex-1 min-w-[200px]">
         <input v-model="search" class="field !py-1.5 text-xs" placeholder="搜索 邮箱 / ID / 类型…" />
       </div>
@@ -453,14 +477,17 @@ onMounted(() => { loadAccounts(); loadModelList() })
                    case. -->
               <div class="flex items-center gap-2 min-w-0">
                 <span class="text-sm text-white/90 truncate" :title="a.email || '-'">{{ a.email || '-' }}</span>
-                <span v-if="a.sub_account"
-                      class="shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-sky-500/15 text-sky-300 ring-1 ring-sky-400/20"
-                      :title="'子号 (剩余 ' + (a.remaining ?? '—') + ' 积分)'">子号</span>
-                <span v-if="a.image_limited && a.status !== 'quota'"
-                      class="shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/15 text-amber-300 ring-1 ring-amber-400/20"
+                <!-- 身份互斥：子号必然是会员号，所以 子号 > 母号 > 普号 只取一个。
+                     plan 未知(还没查过额度)时不猜，先不显示。 -->
+                <span v-if="a.sub_account" class="acct-tag acct-tag-sub"
+                      :title="'子号 · 会员 (剩余 ' + (a.remaining ?? '—') + ' 积分)'">子号</span>
+                <span v-else-if="a.plan && a.plan !== 'free'" class="acct-tag acct-tag-master"
+                      :title="'会员号 (' + a.plan + ')'">会员号</span>
+                <span v-else-if="a.plan === 'free'" class="acct-tag acct-tag-free"
+                      title="普号 (无会员)">普号</span>
+                <span v-if="a.image_limited && a.status !== 'quota' && a.plan !== 'free'" class="acct-tag acct-tag-limit"
                       title="图片额度耗尽，仅视频可用">图片限额</span>
-                <span v-if="a.video_limited && a.status !== 'quota'"
-                      class="shrink-0 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-500/15 text-amber-300 ring-1 ring-amber-400/20"
+                <span v-if="a.video_limited && a.status !== 'quota' && a.plan !== 'free'" class="acct-tag acct-tag-limit"
                       title="视频额度耗尽，仅图片可用">视频限额</span>
               </div>
             </td>
@@ -473,9 +500,16 @@ onMounted(() => { loadAccounts(); loadModelList() })
             <td class="px-3 py-3.5 align-middle text-right text-sm tabular-nums whitespace-nowrap">
               <!-- quota column: 数字 / —  (never "未知"/"失败"/"检测中") -->
               <!-- remaining === -1 is the provider "unlimited" sentinel → show — not a scary red -1 -->
-               <span v-if="(a.type === 'openai' || a.type === 'adobe' || a.type === 'runway' || a.type === 'leonardo' || a.type === 'krea' || a.type === 'imagine' || a.type === 'grok') && a.remaining != null && a.remaining !== -1"
+              <!-- grok 额度是本地写死的两份计数：图 / 视频，用完即判死，没有恢复时间 -->
+              <span v-if="a.type === 'grok' && a.image_remaining != null"
+                    class="font-mono font-semibold" title="图片剩余 / 视频剩余">
+                <span :class="a.image_remaining > 0 ? 'text-emerald-300' : 'text-rose-300'">{{ a.image_remaining }}</span>
+                <span class="text-white/20">/</span>
+                <span :class="a.video_remaining > 0 ? 'text-emerald-300' : 'text-rose-300'">{{ a.video_remaining }}</span>
+              </span>
+              <span v-else-if="(a.type === 'openai' || a.type === 'adobe' || a.type === 'runway' || a.type === 'leonardo' || a.type === 'krea' || a.type === 'imagine') && a.remaining != null && a.remaining !== -1"
                     class="font-mono font-semibold"
-                    :class="a.remaining > 0 ? 'text-emerald-300' : 'text-rose-300'">{{ a.remaining }}{{ a.type === 'grok' ? '%' : '' }}</span>
+                    :class="a.remaining > 0 ? 'text-emerald-300' : 'text-rose-300'">{{ a.remaining }}</span>
               <span v-else class="text-white/25" :title="a._quotaError || ''">—</span>
             </td>
             <!-- weight (edit via modal) -->
@@ -484,8 +518,8 @@ onMounted(() => { loadAccounts(); loadModelList() })
             </td>
             <!-- concurrency (custom = configured value; others = system fixed) -->
             <td class="px-3 py-3.5 align-middle text-center whitespace-nowrap text-xs tabular-nums">
-              <span v-if="a.type === 'custom'" class="text-white/70">{{ a.concurrency || 1 }}</span>
-              <span v-else class="text-white/25" title="系统固定">{{ a.type === 'grok' ? 10 : 1 }}</span>
+              <span v-if="a.type === 'custom'" class="text-white/70">{{ acctConcurrency(a) }}</span>
+              <span v-else class="text-white/25" title="系统固定">{{ acctConcurrency(a) }}</span>
             </td>
             <!-- reset_after -->
             <td class="px-3 py-3.5 align-middle text-xs whitespace-nowrap">
@@ -621,6 +655,16 @@ onMounted(() => { loadAccounts(); loadModelList() })
   background: rgb(20 184 166 / 0.22);
   color: rgb(94 234 212);
   box-shadow: inset 0 0 0 1px rgb(94 234 212 / 0.45);
+}
+.fp-purple {
+  background: rgb(168 85 247 / 0.22);
+  color: rgb(216 180 254);
+  box-shadow: inset 0 0 0 1px rgb(216 180 254 / 0.45);
+}
+.fp-slate {
+  background: rgb(148 163 184 / 0.22);
+  color: rgb(203 213 225);
+  box-shadow: inset 0 0 0 1px rgb(203 213 225 / 0.4);
 }
 
 /* --- icon-only action buttons */

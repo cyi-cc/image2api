@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	"backend/internal/model"
@@ -33,6 +34,9 @@ type UserGenerateRequest struct {
 	Resolution      string
 	Duration        string
 	ReferenceImages []string
+	// ReferenceMode overrides the model's default ("frame" or "asset") —
+	// the 画图台 首尾帧/参考图 toggle for models that support both.
+	ReferenceMode string
 	// DeAI applies 去AI特征 post-processing to the generated image (image only)
 	// and charges the per-tier surcharge on top of the model price.
 	DeAI bool
@@ -59,6 +63,9 @@ func (s *UserGenerationService) Generate(ctx context.Context, user *model.User, 
 
 	switch modelItem.Type {
 	case "video":
+		if err := validateReferenceMode(in.ReferenceMode, modelItem, len(in.ReferenceImages)); err != nil {
+			return nil, err
+		}
 		resp, err := s.v1.prepareSessionVideo(ctx, principal, V1VideoRequest{
 			Model:           in.Model,
 			Prompt:          in.Prompt,
@@ -66,6 +73,7 @@ func (s *UserGenerationService) Generate(ctx context.Context, user *model.User, 
 			AspectRatio:     in.Ratio,
 			Resolution:      in.Resolution,
 			ReferenceImages: in.ReferenceImages,
+			ReferenceMode:   strings.TrimSpace(in.ReferenceMode),
 		})
 		if err != nil {
 			return nil, err
@@ -85,6 +93,27 @@ func (s *UserGenerationService) Generate(ctx context.Context, user *model.User, 
 		}
 		return resp, nil
 	}
+}
+
+// validateReferenceMode mirrors the /v1 checks: the override must be "frame"
+// or "asset", the model must support references at all, and frame mode carries
+// at most 2 images (first+last frame).
+func validateReferenceMode(rm string, modelItem *model.ModelConfig, refCount int) error {
+	rm = strings.TrimSpace(rm)
+	if rm == "" {
+		return nil
+	}
+	supported := strings.TrimSpace(modelItem.ReferenceMode)
+	if supported == "" || supported == "none" {
+		return fmt.Errorf("%w: reference_mode not supported for this model", ErrUnsupportedParams)
+	}
+	if rm != "frame" && rm != "asset" {
+		return fmt.Errorf("%w: reference_mode must be 'frame' or 'asset'", ErrUnsupportedParams)
+	}
+	if rm == "frame" && refCount > 2 {
+		return fmt.Errorf("%w: frame mode supports at most 2 reference images (first+last frame), got %d", ErrUnsupportedParams, refCount)
+	}
+	return nil
 }
 
 func (s *UserGenerationService) AdminTest(ctx context.Context, user *model.User, in UserGenerateRequest) (map[string]any, error) {

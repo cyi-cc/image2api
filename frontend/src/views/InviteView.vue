@@ -7,6 +7,7 @@ import { auth, refreshMe } from '../auth'
 import { api } from '../api'
 import { fmtIso } from '../utils/format'
 import Icon from '../components/Icon.vue'
+import Mascot from '../components/Mascot.vue'
 
 // Reward per completed invite — comes from the backend (credits.invite_reward),
 // falling back to 3 until the response lands.
@@ -80,8 +81,8 @@ function toast(m) {
   <div class="theme-text space-y-10">
     <!-- header -->
     <header>
-      <div class="text-[10px] uppercase tracking-[0.3em] text-amber-300/70 font-medium">奖励</div>
-      <h1 class="mt-2 text-4xl md:text-5xl font-bold tracking-tight">邀请好友</h1>
+      <span class="sticker">🎀 奖励</span>
+      <h1 class="mt-3 text-4xl md:text-5xl font-bold tracking-tight">邀请好友</h1>
       <p class="text-white/45 mt-2">好友用你的链接注册,并完成首次生图后,你得 {{ INVITE_REWARD }} 积分。</p>
     </header>
 
@@ -131,7 +132,11 @@ function toast(m) {
 
       <div class="card overflow-hidden">
         <div v-if="loading && !records.length" class="text-center text-sm text-white/40 py-16">加载中…</div>
-        <div v-else-if="!records.length" class="text-center text-sm text-white/40 py-16">还没有人通过你的链接注册</div>
+        <div v-else-if="!records.length" class="relative overflow-hidden flex flex-col items-center gap-3 text-white/40 py-14">
+          <div class="anime-stars"></div>
+          <Mascot :size="110" />
+          <span class="text-sm">还没有人通过你的链接注册～快去分享吧</span>
+        </div>
 
         <table v-else class="w-full text-sm">
           <colgroup>

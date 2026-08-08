@@ -124,6 +124,58 @@ func (r *TokenRepository) ReserveQuota(ctx context.Context, pool, id string, amo
 	return allowed, deducted, err
 }
 
+// Grok accounts carry a forced local quota instead of an upstream balance:
+// Console 没有额度接口，所以导入时写死 图 5 / 视频 2，用一次扣一次，两个都归零直接判死。
+const (
+	GrokImageQuotaKey = "grok_image_remaining"
+	GrokVideoQuotaKey = "grok_video_remaining"
+	GrokImageQuota    = 5
+	GrokVideoQuota    = 2
+)
+
+// ConsumeGrokQuota deducts one unit from a grok account's local per-kind quota
+// under a row lock. Zeroed kinds are flagged (image_limited / video_limited) so
+// scheduling skips them; once both are zero the account is dead (no reset time —
+// 用完就废).
+func (r *TokenRepository) ConsumeGrokQuota(ctx context.Context, id, kind string) error {
+	return r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var item model.TokenAccount
+		if e := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&item, "pool = ? AND id = ?", "grok", id).Error; e != nil {
+			return e
+		}
+		images, known := metaInt(item.Meta, GrokImageQuotaKey)
+		if !known {
+			images = GrokImageQuota
+		}
+		videos, known := metaInt(item.Meta, GrokVideoQuotaKey)
+		if !known {
+			videos = GrokVideoQuota
+		}
+		if kind == "video" {
+			videos = max(0, videos-1)
+		} else {
+			images = max(0, images-1)
+		}
+		meta := cloneMeta(item.Meta)
+		meta[GrokImageQuotaKey] = images
+		meta[GrokVideoQuotaKey] = videos
+		patch := map[string]any{
+			"meta":          meta,
+			"image_limited": images <= 0,
+			"video_limited": videos <= 0,
+			"updated_at":    time.Now(),
+		}
+		if images <= 0 && videos <= 0 {
+			patch["status"] = "disabled"
+			patch["dead"] = true
+		}
+		return tx.Model(&model.TokenAccount{}).
+			Where("pool = ? AND id = ?", "grok", id).
+			Updates(patch).Error
+	})
+}
+
 // RefundQuota atomically adds `amount` back to cached_quota_remaining (releasing a
 // hold from a reservation whose render then failed). No-op if the balance is
 // unknown. Row-locked like ReserveQuota.

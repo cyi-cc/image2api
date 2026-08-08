@@ -342,6 +342,7 @@ func (h *ProviderAdminHandler) AccountsList(c *gin.Context) {
 	// 「删除异常账号」to collect every dead id regardless of the current page.
 	typeFilter := strings.TrimSpace(c.Query("type"))
 	statusFilter := strings.TrimSpace(c.Query("status"))
+	planFilter := strings.TrimSpace(c.Query("plan"))
 	deadOnly := c.Query("dead") == "1"
 	q := strings.ToLower(strings.TrimSpace(c.Query("q")))
 	filtered := make([]map[string]any, 0, len(data))
@@ -354,6 +355,22 @@ func (h *ProviderAdminHandler) AccountsList(c *gin.Context) {
 		}
 		if statusFilter != "" && rowStr(row, "status") != statusFilter {
 			continue
+		}
+		// plan filter: vip=非free, free=free, sub=子号, master=vip且非子号
+		if planFilter != "" {
+			plan := strings.ToLower(rowStr(row, "plan"))
+			isSub := rowBool(row, "sub_account")
+			isFree := plan == "" || plan == "free"
+			switch planFilter {
+			case "vip":
+				if isFree { continue }
+			case "free":
+				if !isFree { continue }
+			case "sub":
+				if !isSub { continue }
+			case "master":
+				if isFree || isSub { continue }
+			}
 		}
 		if q != "" {
 			email := strings.ToLower(rowStr(row, "email"))

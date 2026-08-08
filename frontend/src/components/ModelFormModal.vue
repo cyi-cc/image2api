@@ -40,10 +40,7 @@ const isVideo = computed(() => entry.value?.type === 'video')
 // Display tiers in canonical ascending order (720p before 1080p; 1K<2K<4K)
 // regardless of how the catalog/stored record happens to list them.
 const resolutions = computed(() => sortResolutions(entry.value?.resolutions || []))
-const isPerSecond = computed(() => {
-  const id = entry.value?.id || ''
-  return id.startsWith('seedance')
-})
+const isPerSecond = computed(() => false)
 
 const durationTiers = computed(() => {
   const e = entry.value

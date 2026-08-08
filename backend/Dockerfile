@@ -1,9 +1,8 @@
 # syntax=docker/dockerfile:1
 
 # --- Stage 1: build the Go binary from source ---
-FROM golang:1.26-alpine AS build
+FROM golang:1.26-bookworm AS build
 WORKDIR /src
-RUN apk add --no-cache git
 # Cache deps first for faster rebuilds.
 COPY go.mod go.sum ./
 RUN go mod download
@@ -11,10 +10,11 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/api ./cmd/api
 
 # --- Stage 2: minimal runtime image ---
-FROM alpine:3.20
+FROM debian:bookworm-slim
 # ca-certificates: outbound HTTPS to the AI providers. tzdata: POSTGRES_DSN sets
 # TimeZone=Asia/Shanghai. wget: container healthcheck.
-RUN apk add --no-cache ca-certificates tzdata wget
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata wget \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY --from=build /out/api /app/api
 # Local fallback for generated media / reference uploads (RustFS/S3 is primary).
