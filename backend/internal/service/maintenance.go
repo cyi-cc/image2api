@@ -31,6 +31,7 @@ type MaintenanceService struct {
 	orders          *repo.OrderRepository
 	interval        time.Duration
 	stalePending    time.Duration
+	stalePendingVid time.Duration
 	mediaPruneEvery time.Duration
 	lastMediaPrune  time.Time
 }
@@ -49,6 +50,9 @@ func NewMaintenanceService(tokens *repo.TokenRepository, tokenSvc *TokenService,
 		orders:          orders,
 		interval:        60 * time.Second,
 		stalePending:    600 * time.Second,
+		// 视频比图片慢得多，单条执行预算就是 30 分钟（videoGenBudget），用图片的
+		// 10 分钟去扫会在它出片前判死并退款。
+		stalePendingVid: 30 * time.Minute,
 		mediaPruneEvery: 60 * time.Second,
 	}
 }
@@ -180,7 +184,7 @@ func (m *MaintenanceService) tick(ctx context.Context) {
 	// 3. Fail long-pending events so they stop blocking the per-user gate, and
 	//    refund the credits debited up-front for each abandoned generation (the
 	//    normal failure-refund path never ran for a process-restart orphan).
-	if purged, err := m.events.PurgeStale(ctx, m.stalePending); err != nil {
+	if purged, err := m.events.PurgeStale(ctx, m.stalePending, m.stalePendingVid); err != nil {
 		log.Printf("maintenance: purge_stale: %v", err)
 	} else if len(purged) > 0 {
 		refunded := 0

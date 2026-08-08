@@ -424,6 +424,10 @@ func (r *EventRepository) ClearRefFiles(ctx context.Context, eventID string) err
 		Update("ref_files", nil).Error
 }
 
+// stalePendingWhere selects pending rows past their per-kind deadline: video
+// rows against videoCutoff, everything else against the plain cutoff.
+const stalePendingWhere = "status = ? AND ((kind = ? AND ts < ?) OR (kind <> ? AND ts < ?))"
+
 // StaleEvent identifies a purged pending event so the caller can refund the
 // credits debited up-front AND attribute the failure to the account the
 // (now-abandoned) generation was using.
@@ -439,18 +443,25 @@ type StaleEvent struct {
 // blocks the per-user generation gate (PendingByUser) forever AND silently eats
 // the user's credits (the charge happens at submit; the normal failure-refund
 // path never runs for a process-restart orphan). Mirrors Python purge_stale.
-func (r *EventRepository) PurgeStale(ctx context.Context, maxAge time.Duration) ([]StaleEvent, error) {
+//
+// videoMaxAge 单独给视频用：出片本来就慢（上游长镜头能跑二十多分钟），按图片的
+// 期限扫会在它出片前就判死并退款。
+func (r *EventRepository) PurgeStale(ctx context.Context, maxAge, videoMaxAge time.Duration) ([]StaleEvent, error) {
 	if maxAge <= 0 {
 		maxAge = 600 * time.Second
 	}
+	if videoMaxAge <= 0 {
+		videoMaxAge = maxAge
+	}
 	cutoff := time.Now().Add(-maxAge)
+	videoCutoff := time.Now().Add(-videoMaxAge)
 	var stale []StaleEvent
 	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		// Snapshot who/what to refund BEFORE flipping status, so a concurrent
 		// sweep can't double-count (the UPDATE in the same tx removes them from
 		// the pending set).
 		if err := tx.Model(&model.EventLog{}).
-			Where("status = ? AND ts < ?", "pending", cutoff).
+			Where(stalePendingWhere, "pending", "video", videoCutoff, "video", cutoff).
 			Select("id", "user_id", "account_id", "cost").
 			Scan(&stale).Error; err != nil {
 			return err
@@ -459,7 +470,7 @@ func (r *EventRepository) PurgeStale(ctx context.Context, maxAge time.Duration) 
 			return nil
 		}
 		return tx.Model(&model.EventLog{}).
-			Where("status = ? AND ts < ?", "pending", cutoff).
+			Where(stalePendingWhere, "pending", "video", videoCutoff, "video", cutoff).
 			Updates(map[string]any{
 				"status":     "failed",
 				"error":      gorm.Expr("COALESCE(NULLIF(error, ''), ?)", "abandoned (process restarted or request interrupted)"),
