@@ -493,7 +493,7 @@ func (h *UserGenerationHandler) VideoPresets(c *gin.Context) {
 				"label":                "MiniMax H3 (Leonardo 私有)",
 				"type":                 "video",
 				"provider":             "leonardo",
-				"durations":            []string{"5s", "10s", "15s"},
+				"durations":            []string{"5s", "6s", "7s", "8s", "9s", "10s", "11s", "12s", "13s", "14s", "15s"},
 				"ratios":               []string{"16:9", "9:16"},
 				"resolutions":          []string{"1440p"},
 				"max_reference_images": 8,
@@ -681,6 +681,7 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"ratios":               []string{"16:9", "9:16"},
 			"resolutions":          []string{"720p"},
 			"durations":            []string{"4s", "5s", "6s", "7s", "8s", "9s", "10s", "11s", "12s", "13s", "14s", "15s"},
+			"per_second":           true,
 			"max_reference_images": 9,
 			"reference_mode":       "style",
 			"description":          "Seedance 2.0 Fast",
@@ -692,6 +693,7 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"ratios":               []string{"16:9", "9:16"},
 			"resolutions":          []string{"720p", "1080p"},
 			"durations":            []string{"4s", "5s", "6s", "7s", "8s", "9s", "10s", "11s", "12s", "13s", "14s", "15s"},
+			"per_second":           true,
 			"max_reference_images": 9,
 			"reference_mode":       "style",
 			"description":          "Seedance 2.0",
@@ -716,6 +718,7 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			// Console 视频吃 1–15 秒的整数时长，所以按秒计价（同 seedance）；
 			// 参考图只有 1 张首帧（上游只有 image 字段，没有尾帧）。
 			"durations":            []string{"4s", "5s", "6s", "7s", "8s", "9s", "10s", "11s", "12s", "13s", "14s", "15s"},
+			"per_second":           true,
 			"max_reference_images": 1,
 			"reference_mode":       "frame",
 			"description":          "Grok Imagine video (文/图生视频)",
@@ -748,6 +751,7 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"ratios":               []string{"16:9", "9:16"},
 			"resolutions":          []string{"720p"},
 			"durations":            []string{"4s", "5s", "6s", "7s", "8s", "9s", "10s", "11s", "12s", "13s", "14s", "15s"},
+			"per_second":           true,
 			// 参考资产总上限 8 = 4 图 + 1 音频 + 3 视频（分类上限在服务端校验）。
 			"max_reference_images": 8,
 			"reference_mode":       "style",
@@ -760,6 +764,7 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"ratios":               []string{"16:9", "9:16"},
 			"resolutions":          []string{"720p"},
 			"durations":            []string{"4s", "5s", "6s", "7s", "8s", "9s", "10s", "11s", "12s", "13s", "14s", "15s"},
+			"per_second":           true,
 			"max_reference_images": 8,
 			"reference_mode":       "style",
 			"description":          "Leonardo Seedance 2.0 Fast (私有生成 / 图音视频参考)",
@@ -770,7 +775,9 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"type":                 "video",
 			"ratios":               []string{"16:9", "9:16"},
 			"resolutions":          []string{"1440p"},
-			"durations":            []string{"5s", "10s", "15s"},
+			// 上游吃 5–15 秒整数时长，所以按秒计价（后台只填一个 /s 价）。
+			"durations":            []string{"5s", "6s", "7s", "8s", "9s", "10s", "11s", "12s", "13s", "14s", "15s"},
+			"per_second":           true,
 			// 参考资产总上限 8 = 5 图 + 3 音频（分类上限在服务端校验）。
 			"max_reference_images": 8,
 			"reference_mode":       "style",

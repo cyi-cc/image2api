@@ -40,10 +40,12 @@ const isVideo = computed(() => entry.value?.type === 'video')
 // Display tiers in canonical ascending order (720p before 1080p; 1K<2K<4K)
 // regardless of how the catalog/stored record happens to list them.
 const resolutions = computed(() => sortResolutions(entry.value?.resolutions || []))
-// 按秒计价的视频模型（一个 /s 价，实付 = 分辨率价 + 每秒价 × 秒数）。
+// 按秒计价的视频模型（一个 /s 价，实付 = 分辨率价 + 每秒价 × 秒数）。目录用
+// per_second 声明；已入库的模型则看它是否已存了 per_second 价。
 const isPerSecond = computed(() => {
-  const id = entry.value?.id || ''
-  return id.startsWith('seedance') || id === 'grok-video'
+  const e = entry.value
+  if (!e) return false
+  return !!e.per_second || e.duration_prices?.per_second != null
 })
 
 const durationTiers = computed(() => {
