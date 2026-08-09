@@ -1003,7 +1003,7 @@ onUnmounted(() => {
          10 with the user's recent results. No lock: 生成 can be clicked anytime.
          min-w-0 keeps a long prompt from blowing the 1fr track wider than the page. -->
     <div class="min-w-0">
-      <div v-if="displayItems.length" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      <div v-if="displayItems.length" class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
         <div v-for="item in displayItems" :key="item.id"
              class="group relative rounded-xl overflow-hidden ring-1 ring-slate-200 bg-slate-100 aspect-[4/5]">
           <!-- done: media + caption -->
