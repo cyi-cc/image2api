@@ -64,7 +64,7 @@ const taskKey = (x) => [x.model, x.kind, (x.prompt || '').trim()].join('|')
 // Up to 10 cards (一行五个 × 2): in-session tasks first, then the server's recent
 // rows (进行中 + 成功) so the grid stays filled; loadHistory() prunes an optimistic
 // task once the server tracks it → never a duplicate. 新的顶掉老的.
-const displayItems = computed(() => [...tasks.value, ...history.value].slice(0, 10))
+const displayItems = computed(() => [...tasks.value, ...history.value].slice(0, 12))
 
 // ---- derived ----
 const models = computed(() =>
@@ -575,7 +575,7 @@ async function fireOne() {
   const refsSnapshot = refImages.value.slice()
   const chargedPrice = price.value
   tasks.value.unshift(task)
-  if (tasks.value.length > 10) tasks.value = tasks.value.slice(0, 10)
+  if (tasks.value.length > 12) tasks.value = tasks.value.slice(0, 12)
 
   // Optimistically deduct the price (server debits before generating; a failure
   // refunds + refreshMe reconciles).
