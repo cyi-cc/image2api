@@ -33,9 +33,11 @@ const (
 	// sec-ch-ua must agree with userAgent's major version — a mismatch is itself a
 	// bot signal.
 	secChUA = `"Not(A:Brand";v="99", "Google Chrome";v="133", "Chromium";v="133"`
-	// get-session is fronted by Vercel's checkpoint, which 429s most machine
-	// requests; a proxied retry (new exit IP per attempt) succeeds roughly one time
-	// in five, so several spaced attempts are needed for one refresh to land.
+	// get-session only answers with a token once better-auth's cookie cache has
+	// been refreshed by a cross-origin-cookie call; called cold it returns 200
+	// null, which looks exactly like a dead cookie. It also sits behind Vercel's
+	// checkpoint, which 429s machine requests from some exit IPs — so a failed
+	// attempt is retried, falling back to the proxy for a different exit IP.
 	getSessionAttempts   = 10
 	getSessionRetryDelay = 2 * time.Second
 )
@@ -194,14 +196,11 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 	}
 	c.mu.Unlock()
 
-	// Vercel's checkpoint 429s the vast majority of get-session calls, whatever the
-	// TLS fingerprint — but a proxied retry does get through every few attempts
-	// (each new client takes a new exit IP), so retry instead of giving up on the
-	// first 429.
 	var body []byte
 	var status int
 	var setCookies []string
 	var err error
+	var warmed bool
 	for attempt := 0; attempt < getSessionAttempts; attempt++ {
 		if attempt > 0 {
 			select {
@@ -210,8 +209,26 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 			case <-time.After(getSessionRetryDelay):
 			}
 		}
-		status, body, setCookies, err = c.fetchSession(ctx, send, c.proxy != "")
-		if err == nil && status != 429 && status != 403 {
+		// The local IP normally passes the checkpoint; only once it doesn't is the
+		// proxy worth its latency (and its own share of 429s).
+		useProxy := attempt > 0 && c.proxy != ""
+		client, cerr := c.newTLSClientP(useProxy)
+		if cerr != nil {
+			err = cerr
+			continue
+		}
+		// Warm up on the same connection: cross-origin-cookie hands back a fresh
+		// better-auth cookie cache (and CF_Access_Token). Without it get-session
+		// answers 200 null even for a perfectly healthy cookie.
+		warmed = false
+		if warmCookies, werr := c.warmSession(ctx, client, send); werr == nil {
+			warmed = true
+			if merged := mergeCookies(send, warmCookies); merged != send && keepsSession(merged) {
+				send = merged
+			}
+		}
+		status, body, setCookies, err = c.fetchSession(ctx, client, send)
+		if err == nil && warmed && status != 429 && status != 403 {
 			break
 		}
 	}
@@ -223,11 +240,13 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 	// that would strip the session_data cache — after which get-session answers
 	// 200 null and a perfectly healthy account looks dead.
 	if status == 200 {
-		if merged := mergeCookies(send, setCookies); merged != send && keepsSession(merged) {
-			c.mu.Lock()
-			c.rotated[cookie] = merged
-			c.mu.Unlock()
+		if merged := mergeCookies(send, setCookies); keepsSession(merged) {
 			send = merged
+		}
+		if send != cookie {
+			c.mu.Lock()
+			c.rotated[cookie] = send
+			c.mu.Unlock()
 		}
 	}
 	if status == 401 {
@@ -256,6 +275,11 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 		return nil, fmt.Errorf("%w: get-session non-json", ErrTemporaryUpstream)
 	}
 	if strings.TrimSpace(raw.Session.AccessToken) == "" {
+		if !warmed {
+			// A cold get-session (the cookie cache was never refreshed) answers null
+			// for healthy accounts too — temporary, never a reason to kill the account.
+			return nil, fmt.Errorf("%w: get-session 200 without accessToken (no warmup): %s", ErrTemporaryUpstream, clip(body, 160))
+		}
 		// No bearer despite 200 → the cookie no longer authenticates. Carry the body
 		// so the log says WHICH shape it was (null session vs a session without a
 		// token) instead of a bare "auth failed".
@@ -285,23 +309,52 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 	return sess, nil
 }
 
+// warmSession calls cross-origin-cookie, whose response refreshes better-auth's
+// cookie cache and CF_Access_Token. It returns the Set-Cookie headers; a
+// checkpoint answer (403/429) is an error, since get-session would then be cold.
+func (c *Client) warmSession(ctx context.Context, client tlsclient.HttpClient, cookie string) ([]string, error) {
+	req, err := http.NewRequest(http.MethodGet, appBase+"/api/auth/cross-origin-cookie", nil)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	req.Header = sessionHeader(cookie)
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode == 403 || resp.StatusCode == 429 {
+		return nil, fmt.Errorf("cross-origin-cookie http %d", resp.StatusCode)
+	}
+	return resp.Header["Set-Cookie"], nil
+}
+
 // fetchSession performs one get-session call and returns its status, body and
 // Set-Cookie headers.
-func (c *Client) fetchSession(ctx context.Context, cookie string, useProxy bool) (int, []byte, []string, error) {
-	client, err := c.newTLSClientP(useProxy)
-	if err != nil {
-		return 0, nil, nil, err
-	}
+func (c *Client) fetchSession(ctx context.Context, client tlsclient.HttpClient, cookie string) (int, []byte, []string, error) {
 	req, err := http.NewRequest(http.MethodGet, appBase+"/api/auth/get-session", nil)
 	if err != nil {
 		return 0, nil, nil, err
 	}
 	req = req.WithContext(ctx)
-	// Header set/order copied from a real browser's get-session call (HAR): a
-	// same-origin GET carries NO origin header and DOES carry the ua client hints
-	// + priority — sending origin while omitting the hints is exactly the shape
-	// Vercel's checkpoint 429s.
-	req.Header = http.Header{
+	req.Header = sessionHeader(cookie)
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, body, resp.Header["Set-Cookie"], nil
+}
+
+// sessionHeader is the auth endpoints' request shape, copied from a real
+// browser's call (HAR): a same-origin GET carries NO origin header and DOES
+// carry the ua client hints + priority — sending origin while omitting the
+// hints is exactly the shape Vercel's checkpoint 429s.
+func sessionHeader(cookie string) http.Header {
+	return http.Header{
 		"accept":             {"*/*"},
 		"accept-language":    {"en-US,en;q=0.9"},
 		"cache-control":      {"no-cache"},
@@ -323,13 +376,6 @@ func (c *Client) fetchSession(ctx context.Context, cookie string, useProxy bool)
 			"sec-fetch-site", "user-agent",
 		},
 	}
-	resp, err := client.Do(req)
-	if err != nil {
-		return 0, nil, nil, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, body, resp.Header["Set-Cookie"], nil
 }
 
 // session returns the cookie's access token, optionally forcing a fresh mint
