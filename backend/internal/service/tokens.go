@@ -56,6 +56,9 @@ type TokenService struct {
 	// kreaActivating guards the once-per-day krea /app activation sweep so the 60s
 	// maintenance tick can't pile up overlapping sweeps.
 	kreaActivating atomic.Bool
+	// leonardoKeeping guards the leonardo session keep-alive sweep so the 60s
+	// maintenance tick can't pile up overlapping sweeps.
+	leonardoKeeping atomic.Bool
 }
 
 func NewTokenService(tokens *repo.TokenRepository, refresh *repo.RefreshProfileRepository, events *repo.EventRepository, settings *repo.SiteSettingRepository, adobeClient *adobe.Client, chatGPTClient *chatgpt.Client, runwayClient *runway.Client, leonardoClient *leonardo.Client, kreaClient *krea.Client, imagineClient *imagine.Client, grokClient *grok.Client) *TokenService {
@@ -135,6 +138,72 @@ func (s *TokenService) RefreshExpiringTokens(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// leonardoKeepaliveEvery is how long a leonardo cookie may go unrenewed. The due
+// check reads each account's own meta["session_kept_at"], so the cadence survives
+// a restart (no in-memory timer to lose) — after a restart every account whose
+// stamp is older than this is simply due again.
+const leonardoKeepaliveEvery = 5 * time.Minute
+
+// leonardoKeptAtKey stamps the last successful session keep-alive.
+const leonardoKeptAtKey = "session_kept_at"
+
+// RefreshLeonardoSessions re-mints a session for every live leonardo account whose
+// last keep-alive is older than leonardoKeepaliveEvery, instead of waiting for the
+// ~1h bearer cache to lapse or for the account to be used. get-session rolls the
+// better-auth session (expiresAt is pushed out) and may rotate CF_Access_Token /
+// session_data, so the rotated cookie is written back. It never disables an
+// account: a dead cookie is left to the quota-refresh strike logic, which
+// double-checks before killing.
+func (s *TokenService) RefreshLeonardoSessions(ctx context.Context) {
+	if s.leonardo == nil {
+		return
+	}
+	if !s.leonardoKeeping.CompareAndSwap(false, true) {
+		return // a sweep is already running
+	}
+	bg := context.WithoutCancel(ctx)
+	go func() {
+		defer s.leonardoKeeping.Store(false)
+		items, err := s.tokens.ListByPool(bg, "leonardo")
+		if err != nil {
+			return
+		}
+		due := time.Now().Add(-leonardoKeepaliveEvery).Unix()
+		proxied := false
+		for i := range items {
+			a := items[i]
+			if a.Dead || a.Status == "disabled" || strings.TrimSpace(a.Value) == "" {
+				continue
+			}
+			if at, ok := jsonMapInt(a.Meta, leonardoKeptAtKey); ok && int64(at) > due {
+				continue // renewed less than leonardoKeepaliveEvery ago
+			}
+			if !proxied {
+				s.applyProxy(bg)
+				proxied = true
+			}
+			callCtx, cancel := context.WithTimeout(bg, 90*time.Second)
+			_, err := s.leonardo.ProbeSession(callCtx, a.Value)
+			if err != nil {
+				cancel()
+				if errors.Is(err, leonardo.ErrAuth) {
+					log.Printf("leonardo %s: session keepalive auth failure (%v)", a.ID, err)
+				}
+				continue // leave the stamp alone so the next tick retries
+			}
+			fields := map[string]any{}
+			if fresh, ok := s.leonardo.RotatedCookie(a.Value); ok && strings.TrimSpace(fresh) != "" {
+				fields["value"] = fresh
+			}
+			meta := cloneJSONMap(a.Meta)
+			meta[leonardoKeptAtKey] = int(time.Now().Unix())
+			fields["meta"] = meta
+			_, _ = s.tokens.Update(callCtx, "leonardo", a.ID, fields)
+			cancel()
+		}
+	}()
 }
 
 // ActivateKreaDue loads /app (Activate) for each krea account that hasn't been

@@ -165,6 +165,12 @@ func (m *MaintenanceService) tick(ctx context.Context) {
 		//     means the membership lapsed → disable+dead; otherwise re-sync the
 		//     credits balance and 恢复时间 (from the credits' weekly reset).
 		m.tokenSvc.RefreshGrokLiveness(ctx)
+		// 1f. Keep leonardo's better-auth session rolling: get-session extends the
+		//     session and rotates the cookie, so re-minting stops a dormant
+		//     account's cookie from lapsing (a lapsed one can only be fixed by
+		//     re-importing a browser cookie). Due-ness is read per account from
+		//     meta["session_kept_at"], so a restart can't skip a renewal.
+		m.tokenSvc.RefreshLeonardoSessions(ctx)
 	}
 
 	// 2. Auto-renew Adobe cookies whose refresh interval has elapsed.
