@@ -74,6 +74,20 @@ func isContentRejection(status int, body string) bool {
 	return strings.Contains(body, "unsafe") || strings.Contains(body, "privacy_error")
 }
 
+// isClassifierGlitch reports whether a 400 comes from Adobe's media moderation
+// backend failing to READ the media it was handed ("Gemini classification API
+// returned HTTP 400 ... Cannot fetch content from the provided URL") rather than
+// from the request being wrong. The blobs were just uploaded and the identical
+// request succeeds on a retry, so this is a transient upstream fault: retrying
+// (with freshly uploaded blobs) is the fix, and the account must not be blamed.
+func isClassifierGlitch(status int, body string) bool {
+	if status != 400 {
+		return false
+	}
+	return strings.Contains(body, "media_classification_client_error") ||
+		strings.Contains(body, "classification API returned")
+}
+
 var profileURLs = []string{
 	"https://ims-na1.adobelogin.com/ims/profile/v1",
 	"https://adobeid-na1.services.adobe.com/ims/profile/v1",
@@ -667,6 +681,9 @@ func (c *Client) pollImage(ctx context.Context, sess *tlsSession, token, pollURL
 		if resp.StatusCode == 429 || resp.StatusCode == 451 || resp.StatusCode >= 500 {
 			return nil, nil, fmt.Errorf("%w (poll %d: %s)", ErrDeadUpstream, resp.StatusCode, clip(body, 300))
 		}
+		if isClassifierGlitch(resp.StatusCode, string(body)) {
+			return nil, nil, fmt.Errorf("%w (poll classifier: %s)", ErrTemporaryUpstream, clip(body, 300))
+		}
 		if resp.StatusCode != 200 {
 			return nil, nil, fmt.Errorf("adobe poll failed: %d %s", resp.StatusCode, clip(body, 300))
 		}
@@ -866,6 +883,9 @@ func (c *Client) pollVideo(ctx context.Context, sess *tlsSession, token, pollURL
 		}
 		if resp.StatusCode == 429 || resp.StatusCode == 451 || resp.StatusCode >= 500 {
 			return nil, nil, fmt.Errorf("%w (video poll %d: %s)", ErrDeadUpstream, resp.StatusCode, clip(body, 300))
+		}
+		if isClassifierGlitch(resp.StatusCode, string(body)) {
+			return nil, nil, fmt.Errorf("%w (video poll classifier: %s)", ErrTemporaryUpstream, clip(body, 300))
 		}
 		if resp.StatusCode != 200 {
 			return nil, nil, fmt.Errorf("adobe video poll failed: %d %s", resp.StatusCode, clip(body, 300))
