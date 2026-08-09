@@ -6,6 +6,7 @@ import ModelFormModal from '../components/ModelFormModal.vue'
 import CustomModelModal from '../components/CustomModelModal.vue'
 import TestModal from '../components/TestModal.vue'
 import { points } from '../credits'
+import { mediaCaps, presetMap } from '../videoCaps'
 
 const models = ref([])
 const loading = ref(false)
@@ -19,17 +20,24 @@ const statusFilter = ref('')    // '' | 'enabled' | 'disabled'
 const search = ref('')
 
 const TYPE_LABEL = { image: '生图', video: '生视频' }
+const presets = ref({})   // /video-presets: key → 预设（参考资产分类上限的真源）
+
+function caps(m) { return mediaCaps(m, presets.value[m.id]) }
+// 参考图张数:支持音视频参考的模型,max_reference_images 是各类资产合计,图片自己
+// 的上限来自预设 max_images。
+function refImages(m) { return caps(m)?.images || m.max_reference_images }
 const REF_MODE_LABEL = { none: '无', frame: '首帧/首尾帧', asset: '参考图模式' }
 
 function capEmpty(m) {
   if (m.type === 'image') return !(m.ratios || []).length && !m.image_to_image && (m.reference_mode === 'none' || !m.reference_mode)
-  return !(m.durations || []).length && !(m.resolutions || []).length && !m.max_reference_images && !m.id?.startsWith('seedance') && !(m.ratios || []).length
+  return !(m.durations || []).length && !(m.resolutions || []).length && !m.max_reference_images && !caps(m) && !(m.ratios || []).length
 }
 
 async function loadModels() {
   loading.value = true
-  const r = await api('/managed-models')
+  const [r, p] = await Promise.all([api('/managed-models'), api('/video-presets')])
   models.value = r.data?.data || []
+  presets.value = presetMap(p.data?.data)
   loading.value = false
 }
 
@@ -239,12 +247,14 @@ onMounted(loadModels)
                 <!-- Frame mode (首尾帧 2) -->
                 <span v-if="m.reference_mode === 'frame' && m.max_reference_images > 0" class="cap-chip cap-frame">首尾帧 {{ Math.min(m.max_reference_images, 2) }}</span>
                 <!-- Reference image mode (参考图 9) -->
-                <span v-if="m.reference_mode === 'frame' && m.max_reference_images > 2" class="cap-chip cap-ref">参考图 {{ m.max_reference_images }}</span>
-                <span v-else-if="m.reference_mode && m.reference_mode !== 'none' && m.reference_mode !== 'frame' && m.max_reference_images > 0" class="cap-chip cap-ref">参考图 {{ m.max_reference_images }}</span>
+                <span v-if="m.reference_mode === 'frame' && m.max_reference_images > 2" class="cap-chip cap-ref">参考图 {{ refImages(m) }}</span>
+                <span v-else-if="m.reference_mode && m.reference_mode !== 'none' && m.reference_mode !== 'frame' && m.max_reference_images > 0" class="cap-chip cap-ref">参考图 {{ refImages(m) }}</span>
                 <span v-else-if="m.type === 'image' && m.image_to_image" class="cap-chip cap-ref">参考图</span>
-                <!-- Video/Audio for seedance -->
-                <span v-if="m.id?.startsWith('seedance')" class="cap-chip cap-media">视频 3</span>
-                <span v-if="m.id?.startsWith('seedance')" class="cap-chip cap-media">音频 3</span>
+                <!-- 视频/音频参考上限,来自 /video-presets -->
+                <template v-if="caps(m)">
+                  <span v-if="caps(m).videos" class="cap-chip cap-media">视频 {{ caps(m).videos }}</span>
+                  <span v-if="caps(m).audios" class="cap-chip cap-media">音频 {{ caps(m).audios }}</span>
+                </template>
                 <!-- Ratios -->
                 <span v-for="r in (m.ratios || [])" :key="'rt'+r" class="cap-chip cap-mono">{{ r.replace(':', '×') }}</span>
                 <span v-if="capEmpty(m)" class="text-white/30 text-xs">—</span>

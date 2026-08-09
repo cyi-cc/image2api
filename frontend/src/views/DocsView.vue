@@ -6,15 +6,25 @@ import { ref, computed, onMounted } from 'vue'
 import { auth } from '../auth'
 import { api } from '../api'
 import Icon from '../components/Icon.vue'
+import { points } from '../credits'
+import { mediaCaps, presetMap } from '../videoCaps'
 
 const base = computed(() => location.origin)            // /v1 is same-origin (dev: Vite proxy)
 const keyHint = computed(() => auth.user?.api_keys?.[0]?.key_preview || 'YOUR_API_KEY')
 
 const models = ref([])
+const presets = ref({})   // /video-presets: key → 预设（参考资产分类上限的真源）
 onMounted(async () => {
-  const r = await api('/managed-models')
+  const [r, p] = await Promise.all([api('/managed-models'), api('/video-presets')])
   if (r.ok) models.value = (r.data?.data || []).filter((m) => m.enabled !== false)
+  if (p.ok) presets.value = presetMap(p.data?.data)
 })
+
+// 各类参考资产的上限(图片/视频/音频)由后端预设给出,不在这里写死。
+function caps(m) { return mediaCaps(m, presets.value[m.id]) }
+// 参考图张数:支持音视频参考的模型,max_reference_images 是各类资产合计,图片自己
+// 的上限来自预设 max_images。
+function refImages(m) { return caps(m)?.images || m.max_reference_images }
 
 const imageModels = computed(() => models.value.filter((m) => m.type === 'image'))
 const videoModels = computed(() => models.value.filter((m) => m.type === 'video'))
@@ -27,23 +37,29 @@ const sampleSeconds = computed(() => String(videoModels.value[0]?.durations?.[0]
 
 function modeEmpty(m) {
   if (m.type === 'image') return !(m.resolutions || []).length && !m.image_to_image && !(m.ratios || []).length
-  return !(m.resolutions || []).length && !(m.durations || []).length && !m.max_reference_images && !m.id?.startsWith('seedance') && !(m.ratios || []).length
+  return !(m.resolutions || []).length && !(m.durations || []).length && !m.max_reference_images && !caps(m) && !(m.ratios || []).length
 }
 
-function priceOf(m) {
-  if (m.type === 'video') {
-    // Video charge = resolution price + duration price; show the combined range.
-    const rv = Object.values(m.prices || {}).filter((v) => v != null).map(Number)
-    const dv = Object.values(m.duration_prices || {}).filter((v) => v != null).map(Number)
-    if (!rv.length || !dv.length) return '—'
-    const lo = Math.min(...rv) + Math.min(...dv)
-    const hi = Math.max(...rv) + Math.max(...dv)
-    return lo === hi ? `${points(lo)} 积分` : `${points(lo)}–${points(hi)} 积分`
+// ---- 定价(同模型管理的分档展示):代理账号看代理价,某档没设代理价时回退普通价;
+// 普通价为空表示该档不支持,不展示。视频价 = 分辨率价 + 时长价(按秒计价的模型给 /s 价)。
+const isAgent = computed(() => auth.user?.role === 'agent')
+function tierPrice(normal, agent, key) {
+  const n = (normal || {})[key]
+  if (n == null) return null
+  if (isAgent.value) {
+    const a = (agent || {})[key]
+    if (a != null) return Number(a)
   }
-  const vals = Object.values(m.prices || {}).filter((v) => v != null).map(Number)
-  if (!vals.length) return '—'
-  const lo = Math.min(...vals), hi = Math.max(...vals)
-  return lo === hi ? `${points(lo)} 积分` : `${points(lo)}–${points(hi)} 积分`
+  return Number(n)
+}
+function resPrice(m, r) { return tierPrice(m.prices, m.prices_agent, r) }
+function durPrice(m, d) { return tierPrice(m.duration_prices, m.duration_prices_agent, d) }
+function perSecondPrice(m) { return tierPrice(m.duration_prices, m.duration_prices_agent, 'per_second') }
+function priceEmpty(m) {
+  if ((m.resolutions || []).some((r) => resPrice(m, r) != null)) return false
+  if (m.type !== 'video') return true
+  if (perSecondPrice(m) != null) return false
+  return !(m.durations || []).some((d) => durPrice(m, d) != null)
 }
 
 // ---- request parameter tables ----
@@ -272,15 +288,30 @@ async function copy(text) {
         <table class="w-full text-sm">
           <thead>
             <tr class="text-left text-[11px] uppercase tracking-wider text-white/40 border-b border-white/[0.08]">
-              <th class="px-4 py-3 font-medium">model</th>
-              <th class="px-4 py-3 font-medium">类型</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap">model</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap">类型</th>
+              <th class="px-4 py-3 font-medium whitespace-nowrap" title="视频价 = 分辨率价 + 时长价">定价 <span class="normal-case text-white/30">积分</span></th>
               <th class="px-4 py-3 font-medium">能力</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="m in models" :key="m.id" class="border-b border-white/[0.04] last:border-0">
-              <td class="px-4 py-3 font-mono text-white/90">{{ pubName(m) }}</td>
-              <td class="px-4 py-3 text-white/60">{{ m.type === 'video' ? '视频' : '图像' }}</td>
+              <td class="px-4 py-3 font-mono text-white/90 whitespace-nowrap">{{ pubName(m) }}</td>
+              <td class="px-4 py-3 text-white/60 whitespace-nowrap">{{ m.type === 'video' ? '视频' : '图像' }}</td>
+              <td class="px-4 py-3">
+                <div class="flex flex-wrap items-center gap-1 text-[11px]">
+                  <template v-for="r in (m.resolutions || [])" :key="'pr'+r">
+                    <span v-if="resPrice(m, r) != null" class="cap cap-price">{{ r }}<b class="ml-1 font-semibold tabular-nums">{{ points(resPrice(m, r)) }}</b></span>
+                  </template>
+                  <template v-if="m.type === 'video'">
+                    <span v-if="perSecondPrice(m) != null" class="cap cap-price">/s<b class="ml-1 font-semibold tabular-nums">{{ points(perSecondPrice(m)) }}</b></span>
+                    <template v-else v-for="d in (m.durations || [])" :key="'pd'+d">
+                      <span v-if="durPrice(m, d) != null" class="cap cap-price">{{ d }}<b class="ml-1 font-semibold tabular-nums">+{{ points(durPrice(m, d)) }}</b></span>
+                    </template>
+                  </template>
+                  <span v-if="priceEmpty(m)" class="text-white/30">—</span>
+                </div>
+              </td>
               <td class="px-4 py-3">
                 <div class="flex flex-wrap items-center gap-1 text-[11px]">
                   <template v-if="m.type === 'image'">
@@ -292,17 +323,19 @@ async function copy(text) {
                     <span v-else-if="(m.durations || []).length === 1" class="cap cap-dur">{{ m.durations[0] }}</span>
                   </template>
                   <span v-if="m.reference_mode === 'frame' && m.max_reference_images > 0" class="cap cap-frame">首尾帧 {{ Math.min(m.max_reference_images, 2) }}</span>
-                  <span v-if="m.reference_mode === 'frame' && m.max_reference_images > 2" class="cap cap-ref">参考图 {{ m.max_reference_images }}</span>
-                  <span v-else-if="m.reference_mode && m.reference_mode !== 'none' && m.reference_mode !== 'frame' && m.max_reference_images > 0" class="cap cap-ref">参考图 {{ m.max_reference_images }}</span>
+                  <span v-if="m.reference_mode === 'frame' && m.max_reference_images > 2" class="cap cap-ref">参考图 {{ refImages(m) }}</span>
+                  <span v-else-if="m.reference_mode && m.reference_mode !== 'none' && m.reference_mode !== 'frame' && m.max_reference_images > 0" class="cap cap-ref">参考图 {{ refImages(m) }}</span>
                   <span v-if="m.type === 'image' && m.image_to_image && (!m.reference_mode || m.reference_mode === 'none')" class="cap cap-ref">参考图 1</span>
-                  <span v-if="m.id?.startsWith('seedance')" class="cap cap-media">视频 3</span>
-                  <span v-if="m.id?.startsWith('seedance')" class="cap cap-media">音频 3</span>
+                  <template v-if="caps(m)">
+                    <span v-if="caps(m).videos" class="cap cap-media">视频 {{ caps(m).videos }}</span>
+                    <span v-if="caps(m).audios" class="cap cap-media">音频 {{ caps(m).audios }}</span>
+                  </template>
                   <span v-for="r in (m.ratios || [])" :key="'rt'+r" class="cap cap-ratio">{{ r.replace(':', '×') }}</span>
                   <span v-if="modeEmpty(m)" class="text-white/30">—</span>
                 </div>
               </td>
             </tr>
-            <tr v-if="!models.length"><td colspan="3" class="px-4 py-10 text-center text-white/35">暂无可用模型</td></tr>
+            <tr v-if="!models.length"><td colspan="4" class="px-4 py-10 text-center text-white/35">暂无可用模型</td></tr>
           </tbody>
         </table>
       </div>
@@ -490,12 +523,14 @@ html.dark .badge-err { background: rgb(244 63 94 / 0.15); color: rgb(253 164 175
 .cap-frame { background: rgb(236 72 153 / 0.12); color: rgb(159 18 57); box-shadow: inset 0 0 0 1px rgb(236 72 153 / 0.3); }
 .cap-ref { background: rgb(16 185 129 / 0.12); color: rgb(4 120 87); box-shadow: inset 0 0 0 1px rgb(16 185 129 / 0.3); }
 .cap-media { background: rgb(245 158 11 / 0.12); color: rgb(146 64 14); box-shadow: inset 0 0 0 1px rgb(245 158 11 / 0.3); }
+.cap-price { background: rgb(14 165 233 / 0.12); color: rgb(3 105 161); box-shadow: inset 0 0 0 1px rgb(14 165 233 / 0.3); font-variant-numeric: tabular-nums; }
 .cap-ratio { background: rgb(100 116 139 / 0.1); color: rgb(51 65 85); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; box-shadow: inset 0 0 0 1px rgb(100 116 139 / 0.25); }
 html.dark .cap-k { background: rgb(16 185 129 / 0.18); color: rgb(110 231 183); box-shadow: inset 0 0 0 1px rgb(52 211 153 / 0.4); }
 html.dark .cap-dur { background: rgb(99 102 241 / 0.18); color: rgb(165 180 252); box-shadow: inset 0 0 0 1px rgb(129 140 248 / 0.4); }
 html.dark .cap-frame { background: rgb(236 72 153 / 0.18); color: rgb(244 114 182); box-shadow: inset 0 0 0 1px rgb(244 114 182 / 0.45); }
 html.dark .cap-ref { background: rgb(16 185 129 / 0.18); color: rgb(110 231 183); box-shadow: inset 0 0 0 1px rgb(52 211 153 / 0.4); }
 html.dark .cap-media { background: rgb(245 158 11 / 0.18); color: rgb(252 211 77); box-shadow: inset 0 0 0 1px rgb(252 211 77 / 0.45); }
+html.dark .cap-price { background: rgb(14 165 233 / 0.18); color: rgb(125 211 252); box-shadow: inset 0 0 0 1px rgb(56 189 248 / 0.45); }
 html.dark .cap-ratio { background: rgb(255 255 255 / 0.06); color: rgb(255 255 255 / 0.65); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.12); }
 
 /* 苹果风代码卡片：自带深色配色，不随页面主题切换，深/浅背景下都可读 */
