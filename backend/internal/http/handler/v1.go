@@ -41,6 +41,22 @@ func (h *V1Handler) Models(c *gin.Context) {
 	})
 }
 
+// UserBalance — GET /v1/user/balance. 返回 API Key 所属用户的账户级余额
+// （剩余 / 累计已用），与具体令牌无关。
+func (h *V1Handler) UserBalance(c *gin.Context) {
+	principal, err := h.v1.Authenticate(c.Request.Context(), c.GetHeader("Authorization"))
+	if err != nil {
+		h.writeAuthError(c, err)
+		return
+	}
+	resp, err := h.v1.UserBalance(c.Request.Context(), principal)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"detail": "failed to load balance"})
+		return
+	}
+	c.JSON(http.StatusOK, resp)
+}
+
 // ImageGenerations — OpenAI POST /v1/images/generations (text-to-image only).
 // Accepts exactly OpenAI's fields; size→aspect ratio and quality→resolution tier
 // are mapped server-side. Returns {created, data:[{b64_json}]}.

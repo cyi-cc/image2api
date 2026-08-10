@@ -524,6 +524,35 @@ func (r *UserRepository) AdjustCredits(ctx context.Context, userID string, delta
 	return r.GetByID(ctx, userID)
 }
 
+// RefundCredits 归还一次生成的预扣费：余额加回、累计消耗 credits_used 相应减少
+// （不低于 0）。发放类加钱（管理员调整 / CDK / 签到）走 AdjustCredits，不动 credits_used。
+func (r *UserRepository) RefundCredits(ctx context.Context, userID string, amount float64) (*model.User, error) {
+	if amount <= 0 {
+		return r.GetByID(ctx, userID)
+	}
+	err := r.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var user model.User
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&user, "id = ?", userID).Error; err != nil {
+			return err
+		}
+		nextUsed := user.CreditsUsed - amount
+		if nextUsed < 0 {
+			nextUsed = 0
+		}
+		return tx.Model(&model.User{}).
+			Where("id = ?", userID).
+			Updates(map[string]any{
+				"credits":      user.Credits + amount,
+				"credits_used": nextUsed,
+				"updated_at":   time.Now(),
+			}).Error
+	})
+	if err != nil {
+		return nil, err
+	}
+	return r.GetByID(ctx, userID)
+}
+
 // SetCredits sets a user's credit balance to an absolute (non-negative) value.
 // The row is locked for the duration of the transaction so it stays consistent
 // with concurrent AdjustCredits/TryDebitCredits operations.
@@ -570,12 +599,14 @@ func (r *UserRepository) TryDebitCredits(ctx context.Context, userID string, amo
 		if err := tx.Model(&model.User{}).
 			Where("id = ?", userID).
 			Updates(map[string]any{
-				"credits":    nextCredits,
-				"updated_at": time.Now(),
+				"credits":      nextCredits,
+				"credits_used": user.CreditsUsed + amount,
+				"updated_at":   time.Now(),
 			}).Error; err != nil {
 			return err
 		}
 		user.Credits = nextCredits
+		user.CreditsUsed += amount
 		user.UpdatedAt = time.Now()
 		result = &user
 		debited = true

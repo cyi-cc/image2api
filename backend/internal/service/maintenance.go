@@ -239,7 +239,7 @@ func (m *MaintenanceService) tick(ctx context.Context) {
 			if !claimed {
 				continue
 			}
-			if _, err := m.users.AdjustCredits(ctx, e.UserID, e.Cost); err != nil {
+			if _, err := m.users.RefundCredits(ctx, e.UserID, e.Cost); err != nil {
 				log.Printf("maintenance: refund abandoned event %s (user %s, %.0f): %v", e.ID, e.UserID, e.Cost, err)
 			} else {
 				refunded++

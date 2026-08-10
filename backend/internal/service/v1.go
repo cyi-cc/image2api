@@ -391,6 +391,21 @@ func (s *V1Service) ListModels(ctx context.Context) ([]map[string]any, error) {
 	return out, nil
 }
 
+// UserBalance — GET /v1/user/balance 的数据。重新读一次用户行保证实时
+// （principal 里那份是鉴权时读的，可能已经过期）。
+func (s *V1Service) UserBalance(ctx context.Context, principal *APIPrincipal) (map[string]any, error) {
+	user := principal.User
+	if fresh, err := s.users.GetByID(ctx, user.ID); err == nil && fresh != nil {
+		user = fresh
+	}
+	return map[string]any{
+		"object":  "user.balance",
+		"balance": user.Credits,
+		"used":    user.CreditsUsed,
+		"total":   user.Credits + user.CreditsUsed,
+	}, nil
+}
+
 func (s *V1Service) PrepareImageRequest(ctx context.Context, principal *APIPrincipal, in V1ImageRequest) (map[string]any, error) {
 	return s.prepareImageExecution(ctx, principal, in, "v1", true)
 }
@@ -3279,7 +3294,7 @@ func (s *V1Service) refundIfNeeded(ctx context.Context, principal *APIPrincipal,
 	if !claimed {
 		return nil
 	}
-	updated, err := s.users.AdjustCredits(ctx, principal.User.ID, price)
+	updated, err := s.users.RefundCredits(ctx, principal.User.ID, price)
 	if err == nil {
 		principal.User = updated
 	}

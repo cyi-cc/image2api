@@ -231,6 +231,14 @@ if s["status"] == "completed":
 `curl ${base.value}/v1/models \\
   -H "Authorization: Bearer ${keyHint.value}"`,
   },
+  {
+    title: '查询余额 · curl',
+    code:
+`curl ${base.value}/v1/user/balance \\
+  -H "Authorization: Bearer ${keyHint.value}"
+
+# => {"object":"user.balance","balance":12000,"used":680,"total":12680}`,
+  },
 ])
 
 // ---- copy + toast ----
@@ -272,6 +280,7 @@ async function copy(text) {
         <h2 class="text-sm font-semibold text-white/80">端点</h2>
         <ul class="mt-4 space-y-2.5 text-sm font-mono">
           <li class="flex items-center gap-2"><span class="badge-get">GET</span><span class="text-white/80">/v1/models</span></li>
+          <li class="flex items-center gap-2"><span class="badge-get">GET</span><span class="text-white/80">/v1/user/balance</span><span class="text-white/35 font-sans text-xs">查余额</span></li>
           <li class="flex items-center gap-2"><span class="badge-post">POST</span><span class="text-white/80">/v1/images/generations</span><span class="text-white/35 font-sans text-xs">文生图</span></li>
           <li class="flex items-center gap-2"><span class="badge-post">POST</span><span class="text-white/80">/v1/images/edits</span><span class="text-white/35 font-sans text-xs">图生图(multipart)</span></li>
           <li class="flex items-center gap-2"><span class="badge-post">POST</span><span class="text-white/80">/v1/videos</span><span class="text-white/35 font-sans text-xs">建视频任务</span></li>

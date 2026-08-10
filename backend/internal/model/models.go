@@ -15,6 +15,7 @@ type User struct {
 	Role               string  `gorm:"size:32;index;not null"`
 	Status             string  `gorm:"size:32;index;not null"`
 	Credits            float64 `gorm:"not null;default:0"`
+	CreditsUsed        float64 `gorm:"not null;default:0"` // 累计已消耗额度：扣费时加、退款时减，充值/发放不计入
 	Notes              string  `gorm:"type:text"`
 	ConcurrencyGroupID string  `gorm:"size:32;index"`
 	AnnouncementSeen   string  `gorm:"size:32"`            // version hash of the last announcement this user dismissed

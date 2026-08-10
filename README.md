@@ -90,7 +90,7 @@
 - **去AI特征**(可选):画图台一键开启,生成图片自动做去AI痕迹处理(细节微扰 + 去除元数据),按画质档位加收积分(默认 1K+1 / 2K+2 / 4K+3,后台可改价、可整体关闭);带标记的作品在画图台、创作记录、日志与后台图片管理中均有「去AI特征」标识
 
 #### 🔌 OpenAI 兼容
-- 文生图 `/v1/images/generations` · 图生图 `/v1/images/edits`(multipart 上传参考图) · 视频 `/v1/videos`(Sora 式异步:创建→轮询→`/content` 下载) · `/v1/models`
+- 文生图 `/v1/images/generations` · 图生图 `/v1/images/edits`(multipart 上传参考图) · 视频 `/v1/videos`(Sora 式异步:创建→轮询→`/content` 下载) · `/v1/models` · 余额 `/v1/user/balance`(剩余/累计已用)
 - **严格 OpenAI 入参**:`size` **同时决定比例 + 分辨率档**(图像看长边 → 1K/2K/4K,视频看短边 → 720p/1080p),改个 `base_url` + `api_key` 即接现有 OpenAI SDK
 - 图片结果 **base64 直返**,服务端不留存文件,隐私友好;站内 **/docs** 附「分辨率对照表」直接查 `size` 该传什么
 
