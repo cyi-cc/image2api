@@ -40,6 +40,12 @@ const (
 	// attempt is retried, falling back to the proxy for a different exit IP.
 	getSessionAttempts   = 10
 	getSessionRetryDelay = 2 * time.Second
+	// A warmed 200 null usually means the session is gone server-side, but the
+	// same answer also comes back when the checkpoint silently serves a session-
+	// less page to an exit IP — so retry it a few times (later attempts through
+	// the proxy) before calling the account dead. Fewer attempts than the 429
+	// budget: each one costs two requests and a truly dead cookie never recovers.
+	getSessionNullAttempts = 3
 )
 
 var (
@@ -229,6 +235,9 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 		}
 		status, body, setCookies, err = c.fetchSession(ctx, client, send)
 		if err == nil && warmed && status != 429 && status != 403 {
+			if status == 200 && sessionAccessToken(body) == "" && attempt < getSessionNullAttempts-1 {
+				continue // retry a null session on another exit IP before giving up
+			}
 			break
 		}
 	}
@@ -347,6 +356,20 @@ func (c *Client) fetchSession(ctx context.Context, client tlsclient.HttpClient, 
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, body, resp.Header["Set-Cookie"], nil
+}
+
+// sessionAccessToken pulls the bearer out of a get-session body; "" means the
+// answer carried none (a null session, or a session without a token).
+func sessionAccessToken(body []byte) string {
+	var raw struct {
+		Session struct {
+			AccessToken string `json:"accessToken"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(raw.Session.AccessToken)
 }
 
 // sessionHeader is the auth endpoints' request shape, copied from a real
