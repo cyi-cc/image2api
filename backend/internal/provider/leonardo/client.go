@@ -66,10 +66,14 @@ type Client struct {
 	// persists it; keeping it here means an unpersisted rotation still works for
 	// the rest of the process's life.
 	rotated map[string]string
+	// refreshing serialises get-session per cookie. Two concurrent refreshes hand
+	// Cognito the same refresh token twice and its reuse detection revokes the
+	// whole session — the account then answers 401 forever.
+	refreshing map[string]*sync.Mutex
 }
 
 func NewClient(proxy string) *Client {
-	return &Client{proxy: strings.TrimSpace(proxy), sessions: map[string]*Session{}, rotated: map[string]string{}}
+	return &Client{proxy: strings.TrimSpace(proxy), sessions: map[string]*Session{}, rotated: map[string]string{}, refreshing: map[string]*sync.Mutex{}}
 }
 
 func (c *Client) SetProxy(proxy string) {
@@ -186,6 +190,18 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 	}
 	// Re-use a cached, still-valid access token (keep a 60s safety margin) instead
 	// of hitting the heavily rate-limited get-session endpoint again.
+	c.mu.Lock()
+	if cs, ok := c.sessions[cookie]; ok && cs.ExpiresAt-60 > time.Now().Unix() {
+		c.mu.Unlock()
+		return cs, nil
+	}
+	c.mu.Unlock()
+
+	// Only one refresh per cookie at a time; the others wait and then re-use the
+	// token it minted.
+	gate := c.refreshGate(cookie)
+	gate.Lock()
+	defer gate.Unlock()
 	c.mu.Lock()
 	if cs, ok := c.sessions[cookie]; ok && cs.ExpiresAt-60 > time.Now().Unix() {
 		c.mu.Unlock()
@@ -325,6 +341,18 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 		c.mu.Unlock()
 	}
 	return sess, nil
+}
+
+// refreshGate returns the per-cookie lock that serialises get-session refreshes.
+func (c *Client) refreshGate(cookie string) *sync.Mutex {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	gate, ok := c.refreshing[cookie]
+	if !ok {
+		gate = &sync.Mutex{}
+		c.refreshing[cookie] = gate
+	}
+	return gate
 }
 
 // warmSession calls cross-origin-cookie, whose response refreshes better-auth's
