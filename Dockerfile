@@ -13,7 +13,17 @@ FROM golang:1.26-alpine AS backend-build
 WORKDIR /src
 RUN apk add --no-cache git
 COPY backend/go.mod backend/go.sum ./
-RUN go mod download
+# proxy.golang.org may reset connections in some networks. A `|`-separated
+# GOPROXY list falls through on transport errors (unlike `,`, which only falls
+# through on 404/410). Keep it overridable for private or corporate mirrors.
+ARG GOPROXY="https://proxy.golang.org|https://goproxy.cn|direct"
+ENV GOPROXY=${GOPROXY}
+RUN for attempt in 1 2 3; do \
+      go mod download && exit 0; \
+      echo "go mod download failed (attempt ${attempt}/3); retrying..." >&2; \
+      sleep "${attempt}"; \
+    done; \
+    exit 1
 COPY backend/ ./
 RUN rm -rf internal/frontend/dist
 COPY --from=frontend-build /src/dist ./internal/frontend/dist

@@ -113,7 +113,9 @@ const maxRefs = computed(() => {
   if (mode.value === 'video') {
     const a = Number(familyPreset.value?.max_reference_images || 0)
     const b = Number(model.value?.max_reference_images || 0)
-    return Math.max(a, b)
+    const raw = Math.max(a, b)
+    if (refMode.value === 'frame') return Math.min(raw, 2)
+    return raw
   }
   // Image-to-image: honor the model's configured max (gpt-image-2=3,
   // seedream-4.5=6, flux-klein-2=4 …). Fall back to 1 when image_to_image is on
@@ -122,7 +124,25 @@ const maxRefs = computed(() => {
   if (m > 0) return m
   return model.value?.image_to_image ? 1 : 0
 })
-const refMode = computed(() => familyPreset.value?.reference_mode || model.value?.reference_mode || 'none')
+const refModeDefault = computed(() => familyPreset.value?.reference_mode || model.value?.reference_mode || 'none')
+const supportsBoth = computed(() => { const m = model.value; return m && m.reference_mode === 'style' && (m.max_reference_images || 0) >= 2 })
+const refMode = ref(refModeDefault.value)
+watch(refModeDefault, (v) => { refMode.value = v })
+
+const perSecondRate = computed(() => {
+  if (mode.value !== 'video' || !model.value) return null
+  const n = model.value.duration_prices?.per_second
+  if (n == null) return null
+  return isAgent.value ? (model.value.duration_prices_agent?.per_second ?? n) : n
+})
+const secsRange = computed(() => {
+  if (perSecondRate.value == null) return null
+  const ds = (model.value.durations || []).map(parseFloat).filter(n => !isNaN(n))
+  if (ds.length >= 2) return { min: ds[0], max: ds[ds.length - 1] }
+  return { min: 4, max: 15 }
+})
+const secs = ref(secsRange.value?.min || 5)
+watch(secsRange, (r) => { if (r && (secs.value < r.min || secs.value > r.max)) secs.value = r.min })
 // Most video models (veo31, luma) support pure text2video, so refs are optional.
 // A model can opt into strict image-to-video by declaring `requires_reference`
 // in its preset (e.g. runway-gen4-turbo) — then a first-frame image is mandatory.
@@ -153,10 +173,8 @@ const price = computed(() => {
   const m = model.value
   if (mode.value === 'video') {
     const rp = tierPrice(m.prices, m.prices_agent, resolution.value)
-    const perSecond = tierPrice(m.duration_prices, m.duration_prices_agent, 'per_second')
-    const dp = perSecond == null
-      ? tierPrice(m.duration_prices, m.duration_prices_agent, duration.value)
-      : perSecond * (parseFloat(duration.value) || 0)
+    if (perSecondRate.value != null) return rp + perSecondRate.value * secs.value
+    const dp = tierPrice(m.duration_prices, m.duration_prices_agent, duration.value)
     if (rp == null || dp == null) return null
     return rp + dp
   }
@@ -191,6 +209,7 @@ function selectModel(id) {
 function setMode(m) {
   if (mode.value === m) return
   mode.value = m
+  clearRefs()   // 切换生图/生视频清空参考文件
   // pick a default model of the new kind, if any
   const first = allModels.value.find((x) => x.enabled !== false && x.type === m)
   modelId.value = first?.id || ''
@@ -202,32 +221,31 @@ function openPicker() { fileInput.value && fileInput.value.click() }
 // here at pick time so an oversized image fails fast with a clear message instead
 // of charging + failing upstream after the upload.
 const MAX_REF_BYTES = 20 * 1024 * 1024
+const fileAccept = computed(() => 'image/*')
+
 function onFiles(ev) {
   addFiles(Array.from(ev.target.files || []))
   if (ev.target) ev.target.value = ''
 }
-// Shared by the file picker AND drag-and-drop. Filters to images, honors the
-// per-model max + 20MB cap. The preview shows a small downscaled thumbnail;
-// the ORIGINAL file is kept untouched and is what gets uploaded at submit time.
+// Shared by the file picker AND drag-and-drop. Honors the per-model max +
+// 20MB cap.
 function addFiles(files) {
-  files = files.filter((f) => f && f.type && f.type.startsWith('image/'))
-  const room = Math.max(0, maxRefs.value - refImages.value.length)
   const tooBig = []
-  let added = 0
   for (const f of files) {
-    if (added >= room) break
+    if (!f || !f.type) continue
+    const isImage = f.type.startsWith('image/')
+    if (!isImage) continue
+    if (refImages.value.length >= maxRefs.value) break
     if (f.size > MAX_REF_BYTES) { tooBig.push(f.name); continue }
     makeThumb(f).then((thumb) => {
-      if (thumb) { refImages.value.push({ name: f.name, file: f, thumb }); return }
-      // thumbnail failed (odd format) — fall back to the full data URL preview
+      if (thumb) { refImages.value.push({ name: f.name, file: f, thumb, fileType: 'image' }); return }
       const reader = new FileReader()
-      reader.onload = () => refImages.value.push({ name: f.name, file: f, dataUrl: reader.result })
+      reader.onload = () => refImages.value.push({ name: f.name, file: f, dataUrl: reader.result, fileType: 'image' })
       reader.readAsDataURL(f)
     })
-    added++
   }
   error.value = tooBig.length
-    ? `图片超过 20MB 已跳过：${tooBig.join('、')}（请压缩后再传）`
+    ? `文件超过 20MB 已跳过：${tooBig.join('、')}（请压缩后再传）`
     : ''
 }
 // Downscale an image blob/file to a small display-only thumbnail so the DOM
@@ -281,7 +299,16 @@ function onDragLeave(ev) {
   if (ev.currentTarget.contains(ev.relatedTarget)) return
   dragOver.value = false
 }
-function removeRef(i) { refImages.value.splice(i, 1) }
+function clearRefs() {
+  for (const r of refImages.value) if (r.mediaUrl) URL.revokeObjectURL(r.mediaUrl)
+  refImages.value = []
+}
+function removeRef(r) {
+  const i = refImages.value.indexOf(r)
+  if (i < 0) return
+  if (r.mediaUrl) URL.revokeObjectURL(r.mediaUrl)
+  refImages.value.splice(i, 1)
+}
 
 // Re-hydrate reference thumbnails from public R2 URLs after a reload. Shared by
 // image and video — both persist their refs the same way server-side.
@@ -406,7 +433,7 @@ async function fireOne() {
     prompt: prompt.value,
     ratio: ratio.value,
     resolution: resolution.value,
-    duration: mode.value === 'video' ? duration.value : '',
+    duration: mode.value === 'video' ? (perSecondRate.value != null ? secs.value + 's' : duration.value) : '',
     deai: mode.value === 'image' && deaiEnabled.value ? deai.value : false,
     status: 'pending',
     file: '',
@@ -430,15 +457,20 @@ async function fireOne() {
   const payload = {
     model: task.model, prompt: task.prompt, ratio: task.ratio, resolution: task.resolution,
   }
-  if (task.kind === 'video') payload.duration = task.duration
+  if (task.kind === 'video') { payload.duration = perSecondRate.value != null ? secs.value + 's' : task.duration; if (refMode.value !== refModeDefault.value) payload.reference_mode = refMode.value }
   if (task.kind === 'image' && task.deai) payload.deai = true
   if (refsSnapshot.length) {
     const refs = await Promise.all(refsSnapshot.map(refToBase64))
     payload.reference_images = refs.filter(Boolean)
   }
 
+  // 同一个任务带固定的 Idempotency-Key:长请求期间连接被重置、浏览器/网关透明
+  // 重发 POST 时,后端不会再生成一次、再扣一次积分。
+  const opts = jsonBody('POST', payload)
+  opts.headers['Idempotency-Key'] = task.id + '-' + task.ts
+
   try {
-    const r = await api('/generate', jsonBody('POST', payload))
+    const r = await api('/generate', opts)
     if (r.ok && r.data?.url) {
       task.status = 'done'
       task.url = r.data.url
@@ -446,6 +478,10 @@ async function fireOne() {
       task.elapsed_ms = r.data.elapsed_ms
       task.charged = r.data.charged ?? chargedPrice
       if (auth.user && r.data.credits != null) auth.user.credits = r.data.credits
+    } else if (r.status === 409 && String(r.data?.detail || '').includes('重复提交')) {
+      // 这次响应来自被透明重发的那个 POST —— 原任务还在生成,保持 running,
+      // loadHistory() 在结果落库后认领它。
+      task.status = 'running'
     } else if (GATEWAY_TIMEOUT.has(r.status)) {
       // CDN/代理回源超时(如 EdgeOne 524)—— 后端仍在生成。保持 running,
       // loadHistory() 在结果落库后认领它。
@@ -636,6 +672,7 @@ onMounted(async () => {
 onUnmounted(() => {
   window.removeEventListener('keydown', onKey)
   clearInterval(pollTimer)
+  for (const r of refImages.value) if (r.mediaUrl) URL.revokeObjectURL(r.mediaUrl)
 })
 </script>
 
@@ -687,7 +724,7 @@ onUnmounted(() => {
         <div class="flex flex-wrap gap-1.5">
           <button v-for="r in ratios" :key="r" type="button" @click="ratio = r"
                   class="rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  :class="ratio === r ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
+                  :class="ratio === r ? 'chip-on' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
             {{ r }}
           </button>
         </div>
@@ -698,7 +735,7 @@ onUnmounted(() => {
         <div class="flex flex-wrap gap-1.5">
           <button v-for="r in resolutions" :key="r" type="button" @click="resolution = r"
                   class="rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  :class="resolution === r ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
+                  :class="resolution === r ? 'chip-on' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
             {{ r }}
           </button>
         </div>
@@ -718,12 +755,19 @@ onUnmounted(() => {
         </button>
       </div>
 
-      <div v-if="mode === 'video' && durations.length > 0">
+      <!-- per-second slider -->
+      <div v-if="perSecondRate && secsRange">
+        <label class="block text-xs font-medium text-slate-500 mb-1.5">时长 <span class="text-slate-400 font-normal tabular-nums">{{ secs }}s</span></label>
+        <input type="range" v-model.number="secs" :min="secsRange.min" :max="secsRange.max" step="1"
+               class="w-full accent-indigo-500 h-2 rounded-lg appearance-none bg-slate-200 cursor-pointer" />
+        <div class="flex justify-between text-[10px] text-slate-400 mt-0.5"><span>{{ secsRange.min }}s</span><span>{{ secsRange.max }}s</span></div>
+      </div>
+      <div v-if="mode === 'video' && durations.length > 0 && !perSecondRate">
         <label class="block text-xs font-medium text-slate-500 mb-1.5">时长</label>
         <div class="flex flex-wrap gap-1.5">
           <button v-for="d in durations" :key="d" type="button" @click="duration = d"
                   class="rounded-lg px-3 py-1.5 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  :class="duration === d ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
+                  :class="duration === d ? 'chip-on' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
             {{ d }}
           </button>
         </div>
@@ -734,17 +778,26 @@ onUnmounted(() => {
         <label class="block text-xs font-medium text-slate-500 mb-1.5">
           {{ refMode === 'frame' && mode === 'video' ? '首尾帧' : '参考图' }}
           <span class="text-slate-400 font-normal">
-            (最多 {{ maxRefs }} 张{{ refMode === 'frame' && mode === 'video' ? (maxRefs >= 2 ? ' · 首帧/末帧' : ' · 首帧') : '' }} · 单张 ≤20MB)
+            (最多 {{ maxRefs }} 张{{ refMode === 'frame' && mode === 'video' ? (maxRefs >= 2 ? ' · 首帧/末帧' : ' · 首帧') : '' }} · 单文件 ≤20MB)
           </span>
           <span v-if="refsRequired" class="text-rose-500">*</span>
         </label>
+        <!-- 参考图 / 首尾帧 分段切换 — 仅两种模式都支持时显示，单独一行 -->
+        <div v-if="supportsBoth" class="inline-flex p-0.5 mb-2 rounded-lg bg-slate-100 gap-0.5">
+          <button v-for="opt in [{ v: 'asset', label: '参考图' }, { v: 'frame', label: '首尾帧' }]" :key="opt.v"
+                  type="button" @click="if ((refMode === 'frame' ? 'frame' : 'asset') !== opt.v) { refMode = opt.v; clearRefs() }"
+                  class="rounded-md px-3 py-1 text-[11px] font-medium transition-colors"
+                  :class="(refMode === 'frame' ? 'frame' : 'asset') === opt.v ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'">
+            {{ opt.label }}
+          </button>
+        </div>
         <div class="flex gap-2 flex-wrap items-start rounded-lg transition-colors"
              :class="dragOver ? 'ring-2 ring-indigo-400 ring-offset-2 bg-indigo-50/40' : ''"
              @drop="onDrop" @dragover="onDragOver" @dragleave="onDragLeave">
-          <div v-for="(img, i) in refImages" :key="i"
+          <div v-for="(img, i) in refImages" :key="img.mediaUrl || img.url || img.name + i"
                class="relative w-20 h-20 rounded-lg overflow-hidden border border-slate-200 bg-slate-50 transition-all">
             <img :src="img.thumb || img.dataUrl || img.url" class="w-full h-full object-cover" />
-            <button type="button" @click="removeRef(i)"
+            <button type="button" @click="removeRef(img)"
                     class="absolute top-1 right-1 w-5 h-5 rounded-full bg-slate-900/70 text-white hover:bg-rose-500 grid place-items-center disabled:opacity-40 disabled:cursor-not-allowed">
               <Icon name="close" class="w-3 h-3" />
             </button>
@@ -759,7 +812,7 @@ onUnmounted(() => {
             <Icon :name="dragOver ? 'download' : 'plus'" class="w-5 h-5" />
           </button>
         </div>
-        <input ref="fileInput" type="file" accept="image/*" multiple class="hidden" @change="onFiles" />
+        <input ref="fileInput" type="file" :accept="fileAccept" multiple class="hidden" @change="onFiles" />
       </div>
 
       <!-- 生图张数 1–4 (image only) — each is a separate concurrent generation. -->
@@ -768,7 +821,7 @@ onUnmounted(() => {
         <div class="flex gap-1.5">
           <button v-for="n in [1, 2, 3, 4]" :key="n" type="button" @click="count = n"
                   class="flex-1 rounded-lg py-1.5 text-xs font-medium transition-colors"
-                  :class="count === n ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
+                  :class="count === n ? 'chip-on' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'">
             {{ n }}
           </button>
         </div>
@@ -815,6 +868,11 @@ onUnmounted(() => {
                  :style="{ backgroundImage: `url(${item.url}.thumb.jpg)` }"
                  class="absolute inset-0 w-full h-full bg-cover bg-center cursor-zoom-in transition-transform duration-300 group-hover:scale-105"></div>
             <div class="absolute inset-x-0 bottom-0 h-1/2 bg-gradient-to-t from-black/85 via-black/30 to-transparent pointer-events-none"></div>
+            <!-- 类型角标：视频卡标"视频"，图片卡不加 -->
+            <span v-if="item.kind === 'video'"
+                  class="absolute top-2 left-2 rounded-md bg-black/55 ring-1 ring-white/10 text-white text-[10px] px-1.5 py-0.5 pointer-events-none">
+              视频
+            </span>
             <!-- hover action: 上参考图. Image → use as reference; video → 末帧设为首帧
                  (only shown when the model supports 首尾帧). Clicking the media zooms. -->
             <div class="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">

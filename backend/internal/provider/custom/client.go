@@ -55,7 +55,7 @@ func sanitizeErr(err error) string {
 	return "upstream request failed"
 }
 
-func httpClient() *http.Client { return &http.Client{Timeout: 10 * time.Minute} }
+func httpClient() *http.Client { return &http.Client{Timeout: 30 * time.Minute} }
 
 // GenerateImage calls the upstream OpenAI image API. With reference images it
 // uses /v1/images/edits (multipart); otherwise /v1/images/generations. Returns

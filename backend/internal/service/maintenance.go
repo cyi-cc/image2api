@@ -164,6 +164,11 @@ func (m *MaintenanceService) tick(ctx context.Context) {
 
 	// 2. Auto-renew Adobe cookies whose refresh interval has elapsed.
 	if m.refresh != nil {
+		if m.settings != nil {
+			if proxy, err := m.settings.GetValue(ctx, "proxy.url"); err == nil && proxy != "" {
+				m.refresh.SetProxy(proxy)
+			}
+		}
 		if n, err := m.refresh.RefreshDue(ctx); err != nil {
 			log.Printf("maintenance: refresh_due: %v", err)
 		} else if n > 0 {

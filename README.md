@@ -137,10 +137,10 @@
 
 | 供应商 | 模型(示例) | 类型 |
 |---|---|---|
-| **Adobe Firefly** | firefly-image-5 · firefly-gpt-image-2 · nano-banana-2 · nano-banana-pro · firefly-video · firefly-ray · gemini-veo3.1 · seedance-fast · seedance-2.0 | 图像 / 视频 |
+| **Adobe Firefly** | firefly-image-5 · firefly-gpt-image-2 · flux-kontext-max · nano-banana-2 · nano-banana-pro · firefly-video · firefly-ray · gemini-veo3.1 · seedance-fast · seedance-2.0 | 图像 / 视频 |
 | **OpenAI** | gpt-image-2 | 图像 |
 | **Runway** | runway-gen4-turbo · runway-nano-banana-2 (Nano Banana 2) · runway-nano-banana-pro (Nano Banana Pro) | 视频 / 图像 |
-| **Grok（grok.com）** | grok-video（imagine 文生 / 图生视频) | 视频 |
+| **Grok（console.x.ai）** | grok-video（imagine 文生 / 图生视频)、grok-image / grok-image-quality（imagine 文生图 / 图生图) | 视频 / 图像 |
 | **Leonardo.ai** | seedream-4.5 · leonardo-seedance-fast · leonardo-seedance-2.0 · leonardo-seedance-mini · leonardo-minimax-h3 · leonardo-happy-horse-1.1 | 图像 / 视频 |
 | **Krea.ai** | flux-klein-2 | 图像 |
 | **Imagine.art** | imagine-1.5 · imagine-1.5pro | 图像 |
@@ -263,7 +263,7 @@ backend/                       后端源码(Go)
 │   │   ├── adobe/             Adobe Firefly(tls-client 指纹)
 │   │   ├── chatgpt/           OpenAI(含 PoW / turnstile)
 │   │   ├── runway/            Runway 视频 + Nano Banana 图像
-│   │   ├── grok/              Grok(grok.com,statsig 伪造,视频)
+│   │   ├── grok/              Grok(console.x.ai DPoP,视频 / 图像;账号态走 grok.com)
 │   │   ├── leonardo/          Leonardo
 │   │   ├── krea/              Krea
 │   │   ├── imagine/           Imagine.art

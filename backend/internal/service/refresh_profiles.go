@@ -26,6 +26,12 @@ func NewRefreshProfileService(profiles *repo.RefreshProfileRepository, tokens *r
 	}
 }
 
+func (s *RefreshProfileService) SetProxy(proxy string) {
+	if s.adobe != nil {
+		s.adobe.SetProxy(proxy)
+	}
+}
+
 func (s *RefreshProfileService) List(ctx context.Context) ([]model.RefreshProfile, error) {
 	return s.profiles.List(ctx)
 }
@@ -64,11 +70,11 @@ func (s *RefreshProfileService) RefreshNow(ctx context.Context, id string) error
 			"consecutive_failures": failures,
 			"next_retry_at":        now.Add(time.Duration(secs) * time.Second),
 		})
-		// After repeated failures the cookie can no longer mint a token — it's
-		// genuinely dead (expired/revoked). Lock the pool token (disabled+dead)
-		// so the UI flags it red. A single failure may be a transient blip, so
-		// only escalate after a few in a row (mirrors Python RefreshManager).
-		if failures >= 3 {
+		// Keep the local three-failure policy, and immediately disable an Adobe
+		// cookie that explicitly requires an account action.
+		if strings.Contains(msg, "ride_AdobeID_acct_actreq") {
+			_, _ = s.tokens.Update(ctx, profile.Pool, id, abnormalPatch("Adobe Cookie 需要账号操作", err))
+		} else if failures >= 3 {
 			_, _ = s.tokens.Update(ctx, profile.Pool, id, abnormalPatch("Adobe Cookie 连续三次自动续期失败", err))
 		}
 		return err
@@ -83,12 +89,14 @@ func (s *RefreshProfileService) RefreshNow(ctx context.Context, id string) error
 		"last_error_at": nil,
 		"updated_at":    now,
 	}
-	email, exp := parseJWTEmailExpiry(result.AccessToken)
+	email, _ := parseJWTEmailExpiry(result.AccessToken)
 	if email != "" {
 		tokenPatch["account_email"] = email
 	}
-	if exp != nil {
-		tokenPatch["cached_quota_reset_after"] = exp.Format(time.RFC3339)
+	if profile.IntervalSeconds > 0 {
+		tokenPatch["cached_quota_reset_after"] = now.Add(time.Duration(profile.IntervalSeconds) * time.Second).Format(time.RFC3339)
+	} else {
+		tokenPatch["cached_quota_reset_after"] = now.Add(54000 * time.Second).Format(time.RFC3339)
 	}
 	if profileData, profileErr := s.adobe.FetchAccountProfile(ctx, result.AccessToken); profileErr == nil {
 		if email := strings.TrimSpace(stringValue(profileData["email"])); email != "" {
@@ -98,6 +106,7 @@ func (s *RefreshProfileService) RefreshNow(ctx context.Context, id string) error
 			tokenPatch["account_display_name"] = displayName
 		}
 	}
+	planKnown := false
 	if quotaData, quotaErr := s.adobe.FetchCreditsBalance(ctx, result.AccessToken); quotaErr == nil {
 		meta := datatypes.JSONMap{
 			"cached_quota_at": int(time.Now().Unix()),
@@ -112,9 +121,51 @@ func (s *RefreshProfileService) RefreshNow(ctx context.Context, id string) error
 			meta["cached_quota_total"] = total
 		}
 		tokenPatch["meta"] = meta
-		if resetAfter := strings.TrimSpace(stringValue(quotaData["available_until"])); resetAfter != "" {
-			tokenPatch["cached_quota_reset_after"] = resetAfter
+
+		planCap := strings.ToLower(strings.TrimSpace(stringValue(quotaData["plan"])))
+		isVIP := planCap != "" && !strings.EqualFold(planCap, "free")
+		planKnown = planCap != ""
+		// 额度打到 0 的 VIP(母号/子号) 视为普号：写死 plan=free，额度恢复(>0)后下次刷新自动还原真实身份。
+		if isVIP {
+			if rem, ok := quotaData["remaining"].(int); ok && rem <= 0 {
+				isVIP = false
+				planCap = "free"
+			}
 		}
+		meta["plan"] = planCap
+
+		// VIP: use Adobe's reset time; set concurrency 5.
+		// 母号/子号 身份固定，不随积分动态变化——只有降级普号才刷新身份。
+		if isVIP {
+			if resetAfter := strings.TrimSpace(stringValue(quotaData["available_until"])); resetAfter != "" {
+				tokenPatch["cached_quota_reset_after"] = resetAfter
+			}
+			tokenPatch["concurrency"] = 5
+			// 身份固定：这里重建了整个 meta，若不带上 is_sub_account，刷新会把导入时
+			// 确定的 母号/子号 标记冲掉。身份只在导入时确定，刷新只沿用、绝不靠积分猜：
+			// 已有标记就带过来；取不到（没 meta / 缺字段）说明身份未知，直接置死号。
+			if existing, gerr := s.tokens.Get(ctx, "adobe", id); gerr == nil {
+				if v, ok := existing.Meta["is_sub_account"]; ok {
+					meta["is_sub_account"] = v
+				}
+			}
+			if _, ok := meta["is_sub_account"]; !ok {
+				tokenPatch["status"] = "disabled"
+				tokenPatch["dead"] = true
+			}
+		} else {
+			// Free account: concurrency 1, limit image+video
+			tokenPatch["concurrency"] = 1
+			tokenPatch["image_limited"] = true
+			tokenPatch["video_limited"] = true
+			meta["is_sub_account"] = false
+		}
+	}
+	// 探测不到会员身份（credits 接口失败或没返回 plan）的号既不算普号也不算会员号，
+	// 留在池里只会在需要会员的请求上撞 403 —— 直接置死号。
+	if !planKnown {
+		tokenPatch["status"] = "disabled"
+		tokenPatch["dead"] = true
 	}
 	if _, err := s.tokens.Update(ctx, "adobe", id, tokenPatch); err != nil {
 		return err

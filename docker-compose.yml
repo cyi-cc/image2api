@@ -35,6 +35,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Override in .env when proxy.golang.org is inaccessible, for example:
+        # GOPROXY: https://goproxy.cn|direct
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org|https://goproxy.cn|direct}
     image: ${MUSESAPI_IMAGE:-musesapi:local}
     environment:
       APP_ENV: production

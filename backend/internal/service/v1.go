@@ -219,6 +219,7 @@ type V1VideoRequest struct {
 	AspectRatio     string
 	Resolution      string
 	ReferenceImages []string
+	ReferenceMode   string // "frame" or "asset", overrides model default
 	// BaseURL — see V1ImageRequest.BaseURL.
 	BaseURL string
 	// AccountID — see V1ImageRequest.AccountID.
@@ -324,6 +325,11 @@ func (s *V1Service) logRejectedEvent(ctx context.Context, kind, modelID string, 
 func (s *V1Service) refreshAdobeToken(ctx context.Context, tokenID string) (model.TokenAccount, bool) {
 	if s.refresh == nil {
 		return model.TokenAccount{}, false
+	}
+	if s.settings != nil {
+		if proxy, err := s.settings.GetValue(ctx, "proxy.url"); err == nil && proxy != "" {
+			s.refresh.SetProxy(proxy)
+		}
 	}
 	if err := s.refresh.RefreshNow(ctx, tokenID); err != nil {
 		return model.TokenAccount{}, false
@@ -562,6 +568,24 @@ func (s *V1Service) prepareImageExecution(ctx context.Context, principal *APIPri
 		}
 		imageBytes = b
 		upstreamURL = u
+	case "grok":
+		b, u, execErr := s.generateGrokImage(genCtx, eventID, modelItem, in, aspectRatio, resolution, noStore)
+		if execErr != nil {
+			_ = s.refundIfNeeded(ctx, principal, eventID, price)
+			_ = s.events.UpdateStatus(ctx, eventID, "failed", execErr.Error(), 0)
+			switch {
+			case errors.Is(execErr, grok.ErrAuth):
+				return nil, ErrProviderAuth
+			case errors.Is(execErr, grok.ErrQuotaExhausted):
+				return nil, ErrProviderQuota
+			case errors.Is(execErr, grok.ErrTemporaryUpstream):
+				return nil, ErrProviderTemporary
+			default:
+				return nil, fmt.Errorf("%w: %v", ErrProviderExecution, execErr)
+			}
+		}
+		imageBytes = b
+		upstreamURL = u
 	case "runway":
 		b, u, execErr := s.generateRunwayImage(genCtx, eventID, modelItem, in, aspectRatio, resolution, noStore)
 		if execErr != nil {
@@ -713,7 +737,7 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 			return nil, err
 		}
 	}
-	genCtx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+	genCtx, cancel := context.WithTimeout(ctx, videoGenBudget)
 	defer cancel()
 
 	// Per-user concurrency gate (画图台 + API key combined); admin tests exempt.
@@ -887,6 +911,24 @@ func (s *V1Service) StartVideoJob(ctx context.Context, principal *APIPrincipal, 
 		s.logRejectedEvent(ctx, "video", in.Model, principal, in.Prompt, "v1", err.Error())
 		return nil, err
 	}
+	// Validate reference_mode against model capabilities and reference count.
+	if rm := strings.TrimSpace(in.ReferenceMode); rm != "" {
+		supported := strings.TrimSpace(modelItem.ReferenceMode)
+		if supported == "none" || supported == "" {
+			s.logRejectedEvent(ctx, "video", in.Model, principal, in.Prompt, "v1", "reference_mode not supported for this model")
+			return nil, errors.New("reference_mode not supported for this model")
+		}
+		if rm != "frame" && rm != "asset" {
+			s.logRejectedEvent(ctx, "video", in.Model, principal, in.Prompt, "v1", "reference_mode must be 'frame' or 'asset'")
+			return nil, errors.New("reference_mode must be 'frame' or 'asset'")
+		}
+		if rm == "frame" && len(in.ReferenceImages) > 2 {
+			return nil, fmt.Errorf("frame mode supports at most 2 reference images (first+last frame), got %d", len(in.ReferenceImages))
+		}
+		if strings.TrimSpace(in.ReferenceMode) == modelItem.ReferenceMode {
+			in.ReferenceMode = "" // same as default, don't override
+		}
+	}
 	// Source "v1": no output file is allocated — the result is the upstream URL,
 	// stored on the event when the render completes.
 	eventID, err := s.logPendingEvent(ctx, "video", modelItem, principal, in.Prompt, aspectRatio, resolution, duration, len(in.ReferenceImages), price, "", "v1", nil, false)
@@ -900,7 +942,7 @@ func (s *V1Service) StartVideoJob(ctx context.Context, principal *APIPrincipal, 
 // runVideoJob renders the clip in the background, capturing the upstream URL
 // (downloadResult=false → no bytes, no R2) and storing it on the event.
 func (s *V1Service) runVideoJob(ctx context.Context, principal *APIPrincipal, in V1VideoRequest, modelItem *model.ModelConfig, eventID, aspectRatio, resolution, duration string, price float64) {
-	genCtx, cancel := context.WithTimeout(ctx, 12*time.Minute)
+	genCtx, cancel := context.WithTimeout(ctx, videoGenBudget)
 	defer cancel()
 	s.inflight.Add(eventID, cancel)
 	defer s.inflight.Done(eventID)
@@ -1257,6 +1299,26 @@ func (s *V1Service) prepareVideo(ctx context.Context, principal *APIPrincipal, i
 	if !modelItem.Enabled || modelItem.Type != "video" {
 		return nil, "", "", "", 0, ErrUnknownModel
 	}
+	// Validate duration against model's supported range (from Durations JSON array).
+	if secs := parseDurationSeconds(duration); secs > 0 {
+		if durList := repo.JSONStrings(modelItem.Durations); len(durList) > 0 {
+			minSecs, maxSecs := 9999, 0
+			for _, d := range durList {
+				n := parseDurationSeconds(d)
+				if n > 0 {
+					if n < minSecs {
+						minSecs = n
+					}
+					if n > maxSecs {
+						maxSecs = n
+					}
+				}
+			}
+			if secs < minSecs || secs > maxSecs {
+				return nil, "", "", "", 0, fmt.Errorf("duration %ds out of range [%d-%d] for model %s", secs, minSecs, maxSecs, modelItem.EffectiveName())
+			}
+		}
+	}
 	// Fail fast before charging — effective provider (custom upstream by id, else native).
 	if eff := s.effectiveProvider(ctx, modelItem); eff == "custom" {
 		// custom serves this id (effectiveProvider guaranteed it) — precheck ok
@@ -1301,6 +1363,11 @@ func (s *V1Service) prepareVideo(ctx context.Context, principal *APIPrincipal, i
 	price, err := s.chargeForModel(ctx, principal, modelItem, "video", resolution, duration, 0, charge)
 	if err != nil {
 		return nil, "", "", "", 0, err
+	}
+	// 规范化 duration 字段：前端 per_second 计费模式可能发来 "per_second" 字符串，
+	// 统一转为 "Xs" 格式（如 "4s"）存库，避免日志显示原始键名。
+	if n := parseDurationSeconds(duration); n > 0 {
+		duration = fmt.Sprintf("%ds", n)
 	}
 	return modelItem, resolution, aspectRatio, duration, price, nil
 }
@@ -1447,6 +1514,10 @@ func (s *V1Service) finishUnimplementedEvent(ctx context.Context, eventID string
 	return s.events.UpdateStatus(ctx, eventID, "failed", "generation executor not implemented yet", 0)
 }
 
+// videoGenBudget caps one video render end-to-end (submit + poll + download).
+// 上游慢的时候 12 分钟不够，统一给 30 分钟。
+const videoGenBudget = 30 * time.Minute
+
 // grokConcurrencyPerAccount is how many simultaneous generations one grok account
 // may run (grok tolerates 10, unlike the 1-per-account default elsewhere).
 const grokConcurrencyPerAccount = 10
@@ -1455,7 +1526,7 @@ const grokConcurrencyPerAccount = 10
 // policy may burn per request before giving up, so an upstream-wide blip
 // ("system under load") can't fan a single request out across the whole pool.
 // After this many accounts fail this way, the request fails.
-const maxTempDeadAccounts = 3
+const maxTempDeadAccounts = 10
 
 // runPoolWithFailover drives a generation across a round-robin-ordered account
 // list with per-error-class behavior, so a bad request never burns the whole
@@ -1487,8 +1558,8 @@ func (s *V1Service) runPoolWithFailover(ctx context.Context, eventID, pool strin
 	busy := 0
 	tempDeadCount := 0
 	for _, token := range active {
-		// 1 concurrent job per account: skip any account already generating.
-		if !s.acctAcquire(ctx, token.ID, eventID, 1) {
+		// Per-account concurrency gate (defaults to 1 for built-in pools).
+		if !s.acctAcquire(ctx, token.ID, eventID, accountConcurrency(token)) {
 			busy++
 			continue
 		}
@@ -1541,6 +1612,15 @@ func (s *V1Service) tryAccount(ctx context.Context, eventID, pool string, token 
 	_ = s.events.SetAccount(ctx, eventID, token.ID, token.AccountEmail)
 	_ = s.tokens.TouchLastUsed(ctx, token.ID)
 	authRefreshed := false
+	if strings.TrimSpace(token.Value) == "" && refreshOnAuth != nil {
+		if refreshed, ok := refreshOnAuth(token.ID); ok {
+			token = refreshed
+			authRefreshed = true
+		} else {
+			s.markTokenDead(ctx, pool, token, kind, errors.New("账号凭据为空且自动刷新失败"))
+			return nil, ErrProviderExecution, true, true
+		}
+	}
 	for {
 		data, err := attempt(token)
 		if err == nil {
@@ -1557,6 +1637,13 @@ func (s *V1Service) tryAccount(ctx context.Context, eventID, pool string, token 
 			return nil, err, true, false
 		}
 		if isAuth {
+			// A 403 user_not_entitled means the account has no Firefly entitlement
+			// — refreshing the access token can't grant one, so kill it now instead
+			// of leaving it in rotation to burn every future request.
+			if errors.Is(err, adobe.ErrNotEntitled) {
+				s.markTokenDead(ctx, pool, token, kind, err)
+				return nil, err, true, true
+			}
 			// Refresh from cookie and retry ONCE; otherwise the credential is dead.
 			if refreshOnAuth != nil && !authRefreshed {
 				if refreshed, ok := refreshOnAuth(token.ID); ok {
@@ -1620,15 +1707,27 @@ func (s *V1Service) generateAdobeImage(ctx context.Context, eventID string, mode
 	for _, item := range items {
 		// Adobe accounts are credit-based (积分号) — no per-kind quota locks.
 		// Only skip accounts that are dead or disabled.
-		if item.Status == "active" && !item.Dead && strings.TrimSpace(item.Value) != "" {
-			active = append(active, item)
+		if item.Status != "active" || item.Dead {
+			continue
 		}
+		// plan 未探测到的号既不算普号也不算会员号，置死号、不参与调度
+		if planUnknown(item.Meta) {
+			s.markPlanUnknownDead(ctx, "adobe", item.ID)
+			continue
+		}
+		// 普号(free)只能调度 free_allowed 的模型（香蕉2 仅 1K）
+		if !freeAccountsAllowed(modelItem, resolution) && isFreeAccount(item.Meta) {
+			continue
+		}
+		active = append(active, item)
 	}
 	active = pinTestAccount(items, active, in.AccountID)
 	if len(active) == 0 {
 		return nil, "", ErrNoProviderAccount
 	}
 	s.rotateRoundRobin("adobe", active)
+	// 图片生成：普号 → 子号 → 母号
+	active = prioritizeSubAccounts(active)
 
 	refs, err := decodeReferenceImages(in.ReferenceImages, max(1, modelItem.MaxReferenceImages))
 	if err != nil {
@@ -1645,6 +1744,13 @@ func (s *V1Service) generateAdobeImage(ctx context.Context, eventID string, mode
 		for _, ref := range refs {
 			id, upErr := s.adobe.UploadImage(ctx, token.Value, ref, "image/png", "")
 			if upErr != nil {
+				if errors.Is(upErr, adobe.ErrRateLimited) {
+					recoverAt := time.Now().Add(4 * time.Hour)
+					s.tokens.Update(ctx, "adobe", token.ID, map[string]any{
+						"status":           "quota",
+						"quota_recover_at": &recoverAt,
+					})
+				}
 				return nil, upErr
 			}
 			blobIDs = append(blobIDs, id)
@@ -1676,10 +1782,21 @@ func (s *V1Service) generateAdobeVideo(ctx context.Context, eventID string, mode
 	}
 	var active []model.TokenAccount
 	for _, item := range items {
-		if item.Status != "active" || item.Dead || strings.TrimSpace(item.Value) == "" {
+		if item.Status != "active" || item.Dead {
 			continue
 		}
+		// Adobe Seedance is unavailable to sub-accounts. Keep the local routing
+		// guard while retaining the upstream plan-based scheduling rules.
 		if isSeedanceModel(modelItem.ID) && isSubAccount(item.Meta) {
+			continue
+		}
+		// plan 未探测到的号既不算普号也不算会员号，置死号、不参与调度
+		if planUnknown(item.Meta) {
+			s.markPlanUnknownDead(ctx, "adobe", item.ID)
+			continue
+		}
+		// 普号(free)只能调度 free_allowed 的模型
+		if !freeAccountsAllowed(modelItem, resolution) && isFreeAccount(item.Meta) {
 			continue
 		}
 		active = append(active, item)
@@ -1689,6 +1806,8 @@ func (s *V1Service) generateAdobeVideo(ctx context.Context, eventID string, mode
 		return nil, "", ErrNoProviderAccount
 	}
 	s.rotateRoundRobin("adobe", active)
+	// 视频生成：普号 → 子号 → 母号
+	active = prioritizeSubAccounts(active)
 
 	refLimit := modelItem.MaxReferenceImages
 	if refLimit <= 0 {
@@ -1698,9 +1817,25 @@ func (s *V1Service) generateAdobeVideo(ctx context.Context, eventID string, mode
 	if err != nil {
 		return nil, "", err
 	}
+	// Classify refs by media type: images, videos, audio.
+	var imgRefs, vidRefs, audRefs [][]byte
+	for _, r := range refs {
+		switch detectMediaType(r) {
+		case "video":
+			vidRefs = append(vidRefs, r)
+		case "audio":
+			audRefs = append(audRefs, r)
+		default:
+			imgRefs = append(imgRefs, r)
+		}
+	}
+	prompt := in.Prompt
 
 	engine, upstreamModel := resolveAdobeVideoEngine(modelItem.ID)
 	referenceMode := defaultString(strings.TrimSpace(modelItem.ReferenceMode), "frame")
+	if rm := strings.TrimSpace(in.ReferenceMode); rm != "" {
+		referenceMode = rm
+	}
 
 	// Round-robin order; fail over to the next account on auth/quota; temporary
 	// upstream errors fail over too without penalizing the account (tempFailover,
@@ -1709,14 +1844,37 @@ func (s *V1Service) generateAdobeVideo(ctx context.Context, eventID string, mode
 	var videoURL string
 	data, err := s.runPoolWithFailover(ctx, eventID, "adobe", active, "video", func(token model.TokenAccount) ([]byte, error) {
 		var blobIDs []string
-		for _, ref := range refs {
+		for _, ref := range imgRefs {
 			id, upErr := s.adobe.UploadImage(ctx, token.Value, ref, "image/png", engine)
 			if upErr != nil {
+				if errors.Is(upErr, adobe.ErrRateLimited) {
+					recoverAt := time.Now().Add(4 * time.Hour)
+					s.tokens.Update(ctx, "adobe", token.ID, map[string]any{
+						"status":           "quota",
+						"quota_recover_at": &recoverAt,
+					})
+				}
 				return nil, upErr
 			}
 			blobIDs = append(blobIDs, id)
 		}
-		bytes, meta, genErr := s.adobe.GenerateVideo(ctx, token.Value, engine, in.Prompt, aspectRatio, durationSeconds, resolution, referenceMode, upstreamModel, blobIDs, downloadResult)
+		var videoBlobIDs []string
+		for _, ref := range vidRefs {
+			id, upErr := s.adobe.UploadImage(ctx, token.Value, ref, "video/mp4", engine)
+			if upErr != nil {
+				return nil, upErr
+			}
+			videoBlobIDs = append(videoBlobIDs, id)
+		}
+		var audioBlobIDs []string
+		for _, ref := range audRefs {
+			id, upErr := s.adobe.UploadImage(ctx, token.Value, ref, "audio/mp3", engine)
+			if upErr != nil {
+				return nil, upErr
+			}
+			audioBlobIDs = append(audioBlobIDs, id)
+		}
+		bytes, meta, genErr := s.adobe.GenerateVideo(ctx, token.Value, engine, prompt, aspectRatio, durationSeconds, resolution, referenceMode, upstreamModel, blobIDs, videoBlobIDs, audioBlobIDs, downloadResult)
 		if genErr == nil {
 			videoURL = strings.TrimSpace(stringValue(meta["video_url"]))
 		}
@@ -1779,8 +1937,8 @@ func (s *V1Service) generateRunwayVideo(ctx context.Context, eventID string, mod
 	var videoURL string
 	busy := 0
 	for _, token := range active {
-		// 1 concurrent job per account: skip any account already generating.
-		if !s.acctAcquire(ctx, token.ID, eventID, 1) {
+		// Per-account concurrency gate (defaults to 1 for built-in pools).
+		if !s.acctAcquire(ctx, token.ID, eventID, accountConcurrency(token)) {
 			busy++
 			continue
 		}
@@ -1877,8 +2035,20 @@ func (s *V1Service) customActive(ctx context.Context, modelID string) ([]model.T
 // accountConcurrency is the per-account simultaneous-job cap. Custom accounts use
 // their configured Concurrency (default 1); built-in pools use the system value.
 func accountConcurrency(item model.TokenAccount) int {
+	if item.Pool == "adobe" {
+		if isFreeAccount(item.Meta) {
+			return 1 // FREE 普号 / 降级号限制为 1 并发
+		}
+		if item.Concurrency > 0 {
+			return item.Concurrency
+		}
+		return 5 // VIP 会员号默认 5 并发
+	}
 	if item.Concurrency > 0 {
 		return item.Concurrency
+	}
+	if item.Pool == "grok" {
+		return grokConcurrencyPerAccount // 10
 	}
 	return 1
 }
@@ -2118,11 +2288,11 @@ func upstreamQuality(resolution string) string {
 	return ""
 }
 
-// generateGrokVideo runs grok's imagine video pipeline across the grok pool.
-// Mirrors the runway policy: no pre-deduct, skip accounts known out of credits
-// (cached remaining <= 0), and treat an out-of-credits / auth failure as a dead
-// account (the grok sso can't be renewed — 失效就失效). Text-to-video only for
-// now (grok reference-image upload isn't wired yet).
+// generateGrokVideo runs grok's imagine video pipeline across the grok pool,
+// via Grok Console (console.x.ai) — the same sso account, but the clean JSON
+// media API instead of the anti-bot gated grok.com website flow.
+// 额度是本地写死的（每号 图 5 / 视频 2）：视频计数归零的号不再调度，成功一次扣一个，
+// 图/视频都归零直接判死；auth / 额度错误同样判死换号（grok sso 不续期，失效就失效）。
 func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, modelItem *model.ModelConfig, in V1VideoRequest, aspectRatio, resolution string, durationSeconds int, downloadResult bool) ([]byte, string, error) {
 	if s.grok == nil {
 		return nil, "", errors.New("grok client not configured")
@@ -2148,7 +2318,7 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 		if item.Status != "active" || item.Dead || strings.TrimSpace(item.Value) == "" {
 			continue
 		}
-		if rem, ok := jsonMapInt(item.Meta, "cached_quota_remaining"); ok && rem <= 0 {
+		if rem, ok := jsonMapInt(item.Meta, repo.GrokVideoQuotaKey); ok && rem <= 0 {
 			continue
 		}
 		active = append(active, item)
@@ -2167,9 +2337,8 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 	var videoURL string
 	busy := 0
 	for _, token := range active {
-		// grok allows 10 concurrent jobs per account (unlike the 1-per-account
-		// default of the other pools).
-		if !s.acctAcquire(ctx, token.ID, eventID, grokConcurrencyPerAccount) {
+		// Per-account concurrency gate (defaults to 1 for built-in pools).
+		if !s.acctAcquire(ctx, token.ID, eventID, accountConcurrency(token)) {
 			busy++
 			continue
 		}
@@ -2178,13 +2347,15 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 			defer s.acctRelease(ctx, token.ID, eventID)
 			_ = s.events.SetAccount(ctx, eventID, token.ID, token.AccountEmail)
 			_ = s.tokens.TouchLastUsed(ctx, token.ID)
-			d, meta, genErr := s.grok.GenerateVideo(ctx, token.Value, in.Prompt, aspectRatio, res, durationSeconds, frames, downloadResult)
+			d, meta, genErr := s.grok.GenerateConsoleVideo(ctx, token.Value, in.Prompt, aspectRatio, res, durationSeconds, frames, downloadResult)
 			if genErr == nil {
 				_, _ = s.tokens.Update(ctx, "grok", token.ID, map[string]any{
 					"last_used_at":  time.Now(),
 					"success_total": gorm.Expr("success_total + 1"),
 					"fails":         0,
 				})
+				// 本地额度各扣各的；图/视频都归零时账号直接判死。
+				_ = s.tokens.ConsumeGrokQuota(ctx, token.ID, "video")
 				data = d
 				videoURL = strings.TrimSpace(stringValue(meta["video_url"]))
 				return true, false
@@ -2203,6 +2374,102 @@ func (s *V1Service) generateGrokVideo(ctx context.Context, eventID string, model
 		}()
 		if done {
 			return data, videoURL, nil
+		}
+		if failover {
+			continue
+		}
+		return nil, "", lastErr
+	}
+	if lastErr == nil {
+		if busy > 0 {
+			return nil, "", ErrConcurrencyFull
+		}
+		lastErr = ErrProviderExecution
+	}
+	return nil, "", lastErr
+}
+
+// generateGrokImage runs Grok Console's image pipeline (grok-imagine-image)
+// across the grok pool. 额度策略同视频路径，只是扣的是图片那份计数。带参考图时
+// （最多 3 张，内联在请求里）自动走 /images/edits 的 quality 上游 — 图生图。
+func (s *V1Service) generateGrokImage(ctx context.Context, eventID string, modelItem *model.ModelConfig, in V1ImageRequest, aspectRatio, resolution string, noStore bool) ([]byte, string, error) {
+	// API-key (noStore) requests skip the download and return the upstream URL.
+	urlOnly := noStore
+	if s.grok == nil {
+		return nil, "", errors.New("grok client not configured")
+	}
+	if s.settings != nil {
+		if proxy, err := s.settings.GetValue(ctx, "proxy.url"); err == nil {
+			s.grok.SetProxy(proxy)
+		}
+	}
+
+	refs, err := decodeReferenceImages(in.ReferenceImages, max(1, modelItem.MaxReferenceImages))
+	if err != nil {
+		return nil, "", err
+	}
+
+	items, err := s.tokens.ListByPool(ctx, "grok")
+	if err != nil {
+		return nil, "", err
+	}
+	var active []model.TokenAccount
+	for _, item := range items {
+		if item.Status != "active" || item.Dead || strings.TrimSpace(item.Value) == "" {
+			continue
+		}
+		if rem, ok := jsonMapInt(item.Meta, repo.GrokImageQuotaKey); ok && rem <= 0 {
+			continue
+		}
+		active = append(active, item)
+	}
+	active = pinTestAccount(items, active, in.AccountID)
+	if len(active) == 0 {
+		return nil, "", ErrNoProviderAccount
+	}
+	s.rotateRoundRobin("grok", active)
+
+	var lastErr error
+	busy := 0
+	for _, token := range active {
+		// Per-account concurrency gate.
+		if !s.acctAcquire(ctx, token.ID, eventID, accountConcurrency(token)) {
+			busy++
+			continue
+		}
+		var data []byte
+		var artURL string
+		done, failover := func() (bool, bool) {
+			defer s.acctRelease(ctx, token.ID, eventID)
+			_ = s.events.SetAccount(ctx, eventID, token.ID, token.AccountEmail)
+			_ = s.tokens.TouchLastUsed(ctx, token.ID)
+			d, meta, genErr := s.grok.GenerateConsoleImage(ctx, token.Value, in.Prompt, aspectRatio, resolution, refs, urlOnly)
+			if genErr == nil {
+				_, _ = s.tokens.Update(ctx, "grok", token.ID, map[string]any{
+					"last_used_at":  time.Now(),
+					"success_total": gorm.Expr("success_total + 1"),
+					"fails":         0,
+				})
+				// 本地额度各扣各的；图/视频都归零时账号直接判死。
+				_ = s.tokens.ConsumeGrokQuota(ctx, token.ID, "image")
+				data = d
+				artURL = strings.TrimSpace(stringValue(meta["image_url"]))
+				return true, false
+			}
+			lastErr = genErr
+			switch {
+			case errors.Is(genErr, grok.ErrAuth), errors.Is(genErr, grok.ErrQuotaExhausted):
+				// 失效 / 额度没了 → 当 401 判死(不续期),换号。
+				s.markTokenFailure(ctx, "grok", token, "image", genErr, true, false)
+				return false, true
+			case errors.Is(genErr, grok.ErrTemporaryUpstream):
+				return false, true
+			default:
+				return false, false
+			}
+		}()
+		if done {
+			return data, artURL, nil
 		}
 		if failover {
 			continue
@@ -2275,8 +2542,8 @@ func (s *V1Service) generateRunwayImage(ctx context.Context, eventID string, mod
 	var lastErr error
 	busy := 0
 	for _, token := range active {
-		// 1 concurrent job per account: skip any account already generating.
-		if !s.acctAcquire(ctx, token.ID, eventID, 1) {
+		// Per-account concurrency gate (defaults to 1 for built-in pools).
+		if !s.acctAcquire(ctx, token.ID, eventID, accountConcurrency(token)) {
 			busy++
 			continue
 		}
@@ -2602,6 +2869,9 @@ func (s *V1Service) generateLeonardoVideo(ctx context.Context, eventID string, m
 		return nil, "", err
 	}
 	referenceMode := defaultString(strings.TrimSpace(modelItem.ReferenceMode), "frame")
+	if rm := strings.TrimSpace(in.ReferenceMode); rm != "" {
+		referenceMode = rm
+	}
 
 	var videoURL string
 	data, err := s.runPoolWithFailover(ctx, eventID, "leonardo", active, "video", func(token model.TokenAccount) ([]byte, error) {
@@ -2952,6 +3222,39 @@ func decodeReferenceImages(inputs []string, limit int) ([][]byte, error) {
 		out = append(out, data)
 	}
 	return out, nil
+}
+
+// detectMediaType inspects the first bytes of a decoded reference to classify it
+// as "video", "audio", or "image". Used to route refs to the correct upload MIME.
+func detectMediaType(data []byte) string {
+	n := len(data)
+	if n < 8 {
+		return "image"
+	}
+	// MP4 / ISOBMFF
+	if n >= 12 && string(data[4:8]) == "ftyp" {
+		return "video"
+	}
+	// WebM
+	if n >= 4 && data[0] == 0x1A && data[1] == 0x45 && data[2] == 0xDF && data[3] == 0xA3 {
+		return "video"
+	}
+	// MP3: ID3 header or sync word 0xFFFx
+	if n >= 3 && data[0] == 0x49 && data[1] == 0x44 && data[2] == 0x33 {
+		return "audio"
+	}
+	if n >= 2 && data[0] == 0xFF && (data[1]&0xE0) == 0xE0 {
+		return "audio"
+	}
+	// WAV
+	if n >= 4 && data[0] == 0x52 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x46 {
+		return "audio"
+	}
+	// OGG
+	if n >= 4 && data[0] == 0x4F && data[1] == 0x67 && data[2] == 0x67 && data[3] == 0x53 {
+		return "audio"
+	}
+	return "image"
 }
 
 func parseImageSize(size, aspectRatio, resolution string) (string, string) {
@@ -3310,16 +3613,8 @@ func (s *V1Service) markTokenFailure(ctx context.Context, pool string, token mod
 	}
 	switch {
 	case isQuota:
-		// Adobe accounts are credit-based (积分号) — quota exhaustion is
-		// non-locking: track the failure for rotation but don't limit or
-		// sink the account. Other pools go straight to "quota" as before.
-		if pool == "adobe" {
-			// No-op: just track fails (already patched above), leave
-			// image_limited/video_limited/status untouched.
-		} else {
-			patch["status"] = "quota"
-		}
-		if pool != "adobe" && strings.TrimSpace(token.CachedQuotaResetAfter) == "" {
+		patch["status"] = "quota"
+		if strings.TrimSpace(token.CachedQuotaResetAfter) == "" {
 			recoverAt := time.Unix((time.Now().Unix()/86400+1)*86400, 0).UTC()
 			patch["quota_recover_at"] = &recoverAt
 		}
@@ -3371,6 +3666,22 @@ func generationKindLabel(kind string) string {
 		return "视频"
 	}
 	return "图片"
+}
+
+func isSeedanceModel(modelID string) bool {
+	return modelID == "seedance-fast" || modelID == "seedance-2.0"
+}
+
+func isSubAccount(meta map[string]interface{}) bool {
+	if meta == nil {
+		return false
+	}
+	v, ok := meta["is_sub_account"]
+	if !ok {
+		return false
+	}
+	b, _ := v.(bool)
+	return b
 }
 
 // nextCursor returns the pool's current round-robin position and atomically
@@ -3440,18 +3751,78 @@ func (s *V1Service) rotateRoundRobin(pool string, items []model.TokenAccount) {
 	}
 }
 
-func isSeedanceModel(modelID string) bool {
-	return modelID == "seedance-fast" || modelID == "seedance-2.0"
+// freeOnly1KModelID is the one free-allowed model 普号 may only serve at 1K
+// (香蕉2 的 2K/4K 需要会员号) — see freeAccountsAllowed.
+const freeOnly1KModelID = "nano-banana-2"
+
+// freeAccountsAllowed reports whether 普号(free) may serve this request: the model
+// must be marked free_allowed. 香蕉2 另外只允许 1K 档，它的 2K/4K 只走会员号。
+func freeAccountsAllowed(modelItem *model.ModelConfig, resolution string) bool {
+	if modelItem == nil || !modelItem.FreeAllowed {
+		return false
+	}
+	if modelItem.ID == freeOnly1KModelID {
+		return strings.EqualFold(strings.TrimSpace(resolution), "1K")
+	}
+	return true
 }
 
-func isSubAccount(meta map[string]interface{}) bool {
+func isFreeAccount(meta map[string]interface{}) bool {
 	if meta == nil {
 		return false
 	}
-	v, ok := meta["is_sub_account"]
-	if !ok {
+	plan := strings.ToLower(strings.TrimSpace(stringValue(meta["plan"])))
+	return plan == "free"
+}
+
+// planUnknown 报告账号的会员身份还没探测出来（meta.plan 缺失或为空）。这类号
+// 既不能当普号也不能当会员号用：当会员号派出去会在需要会员的模型上撞 403
+// user_not_entitled。
+func planUnknown(meta map[string]interface{}) bool {
+	if meta == nil {
+		return true
+	}
+	return strings.TrimSpace(stringValue(meta["plan"])) == ""
+}
+
+// markPlanUnknownDead 把选号时遇到的 plan 未探测账号置为死号，等重新探测到
+// plan 后再由额度刷新恢复。
+func (s *V1Service) markPlanUnknownDead(ctx context.Context, pool, id string) {
+	s.tokens.Update(ctx, pool, id, map[string]any{"status": "disabled", "dead": true})
+}
+
+// prioritizeSubAccounts 按 普号 → 子号 → 母号 的顺序排序：
+// 先消耗普号，普号不可用再用低积分子号，最后才动 vip 母号。
+func prioritizeSubAccounts(active []model.TokenAccount) []model.TokenAccount {
+	var frees, subs, mothers []model.TokenAccount
+	for _, a := range active {
+		switch {
+		case isFreeAccount(a.Meta):
+			frees = append(frees, a)
+		case isLowCredits(a.Meta):
+			subs = append(subs, a)
+		default:
+			mothers = append(mothers, a)
+		}
+	}
+	return append(append(frees, subs...), mothers...)
+}
+
+func isLowCredits(meta map[string]interface{}) bool {
+	if meta == nil {
 		return false
 	}
-	b, _ := v.(bool)
-	return b
+	if v, ok := meta["is_sub_account"]; ok {
+		switch val := v.(type) {
+		case bool:
+			return val
+		case float64:
+			return val != 0
+		}
+	}
+	// 兼容存量账号：is_sub_account 字段不存在时，用积分余额判断（>0 且 ≤4000 视为子号）
+	if rem, ok := jsonMapInt(meta, "cached_quota_remaining"); ok {
+		return rem > 0 && rem <= 4000
+	}
+	return false
 }

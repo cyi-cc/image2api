@@ -21,6 +21,11 @@ const search = ref('')
 const TYPE_LABEL = { image: '生图', video: '生视频' }
 const REF_MODE_LABEL = { none: '无', frame: '首帧/首尾帧', asset: '参考图模式' }
 
+function capEmpty(m) {
+  if (m.type === 'image') return !(m.ratios || []).length && !m.image_to_image && (m.reference_mode === 'none' || !m.reference_mode)
+  return !(m.durations || []).length && !(m.resolutions || []).length && !m.max_reference_images && !(m.ratios || []).length
+}
+
 async function loadModels() {
   loading.value = true
   const r = await api('/managed-models')
@@ -196,7 +201,6 @@ onMounted(loadModels)
                 <span v-if="!(m.resolutions || []).length" class="text-white/30 text-xs">—</span>
               </div>
               <div v-else class="flex flex-wrap gap-1">
-                <!-- video charge = resolution price + duration price; both show 普通/代理 -->
                 <span v-for="r in (m.resolutions || [])" :key="'r'+r" class="price-chip">
                   <span class="text-white/85">{{ r }}</span>
                   <span class="text-white/30 mx-1">普通</span>
@@ -220,26 +224,29 @@ onMounted(loadModels)
                   <span class="text-amber-300/40 ml-1.5">代理</span>
                   <span class="text-amber-300 tabular-nums">+{{ points(m.duration_prices_agent?.per_second ?? m.duration_prices.per_second) }}</span>
                 </span>
-                <span v-if="!(m.resolutions || []).length && !(m.durations || []).length" class="text-white/30 text-xs">—</span>
+                <span v-if="!(m.resolutions || []).length && !(m.durations || []).length && m.duration_prices?.per_second == null" class="text-white/30 text-xs">—</span>
               </div>
             </td>
 
-            <!-- Capability — extras that aren't a price: image-to-image,
-                 video frame mode, supported resolutions for video. -->
+            <!-- Capability — duration range, frame/ref modes, media support -->
             <td class="px-3 py-3.5 align-middle">
               <div class="flex flex-wrap items-center gap-1 text-[11px]">
-                <!-- reference capability with count: frame mode = 首尾帧, else 参考图 -->
-                <span v-if="m.max_reference_images > 0"
-                      class="cap-chip cap-emerald"
-                      :title="REF_MODE_LABEL[m.reference_mode]">{{ m.reference_mode === 'frame' ? '首尾帧' : '参考图' }} {{ m.max_reference_images }}</span>
-                <span v-else-if="m.type === 'image' && m.image_to_image"
-                      class="cap-chip cap-emerald">参考图</span>
-                <span v-if="m.type === 'video'" v-for="r in (m.resolutions || [])" :key="'vr'+r"
-                      class="cap-chip cap-slate">{{ r }}</span>
-                <span v-if="(m.type === 'image' && !(m.ratios || []).length && !m.image_to_image) ||
-                            (m.type === 'video' && !(m.resolutions || []).length && !m.max_reference_images)"
-                      class="text-white/30 text-xs">—</span>
-                <span v-for="r in (m.ratios || [])" :key="'rt'+r" class="cap-chip cap-mono">{{ r }}</span>
+                <!-- Duration range (4s–15s) -->
+                <span v-if="m.type === 'video' && (m.durations || []).length >= 2" class="cap-chip cap-dur">{{ m.durations[0] }}–{{ m.durations[m.durations.length - 1] }}</span>
+                <span v-else-if="m.type === 'video' && (m.durations || []).length === 1" class="cap-chip cap-dur">{{ m.durations[0] }}</span>
+                <!-- Resolutions for image -->
+                <span v-if="m.type === 'image'" v-for="r in (m.resolutions || [])" :key="'ir'+r" class="cap-chip cap-slate">{{ r }}</span>
+                <!-- Resolutions for video -->
+                <span v-if="m.type === 'video'" v-for="r in (m.resolutions || [])" :key="'vr'+r" class="cap-chip cap-slate">{{ r }}</span>
+                <!-- Frame mode (首尾帧 2) -->
+                <span v-if="m.reference_mode === 'frame' && m.max_reference_images > 0" class="cap-chip cap-frame">首尾帧 {{ Math.min(m.max_reference_images, 2) }}</span>
+                <!-- Reference image mode (参考图 9) -->
+                <span v-if="m.reference_mode === 'frame' && m.max_reference_images > 2" class="cap-chip cap-ref">参考图 {{ m.max_reference_images }}</span>
+                <span v-else-if="m.reference_mode && m.reference_mode !== 'none' && m.reference_mode !== 'frame' && m.max_reference_images > 0" class="cap-chip cap-ref">参考图 {{ m.max_reference_images }}</span>
+                <span v-else-if="m.type === 'image' && m.image_to_image" class="cap-chip cap-ref">参考图</span>
+                <!-- Ratios -->
+                <span v-for="r in (m.ratios || [])" :key="'rt'+r" class="cap-chip cap-mono">{{ r.replace(':', '×') }}</span>
+                <span v-if="capEmpty(m)" class="text-white/30 text-xs">—</span>
               </div>
             </td>
 
@@ -335,15 +342,25 @@ onMounted(loadModels)
   border-radius: 9999px;
   white-space: nowrap;
 }
-.cap-emerald {
+.cap-dur {
+  background: rgb(99 102 241 / 0.12);
+  color: rgb(165 180 252);
+  box-shadow: inset 0 0 0 1px rgb(129 140 248 / 0.3);
+}
+.cap-frame {
+  background: rgb(236 72 153 / 0.12);
+  color: rgb(244 114 182);
+  box-shadow: inset 0 0 0 1px rgb(244 114 182 / 0.35);
+}
+.cap-ref {
   background: rgb(16 185 129 / 0.12);
   color: rgb(110 231 183);
-  box-shadow: inset 0 0 0 1px rgb(110 231 183 / 0.3);
+  box-shadow: inset 0 0 0 1px rgb(52 211 153 / 0.3);
 }
-.cap-amber {
+.cap-media {
   background: rgb(245 158 11 / 0.12);
   color: rgb(252 211 77);
-  box-shadow: inset 0 0 0 1px rgb(252 211 77 / 0.3);
+  box-shadow: inset 0 0 0 1px rgb(252 211 77 / 0.35);
 }
 .cap-slate {
   background: rgb(255 255 255 / 0.05);

@@ -6,31 +6,35 @@ import { auth, refreshMe, openLogin } from './auth'
 import { site, loadSite } from './site'
 
 import PublicLayout from './layouts/PublicLayout.vue'
-import AdminLayout from './layouts/AdminLayout.vue'
+
+// Route-level code splitting: a guest landing on the home page must not
+// download the whole admin console. Only the public shell + HomeView are in
+// the entry chunk; every other view (and the admin shell) is fetched on demand.
+const AdminLayout = () => import('./layouts/AdminLayout.vue')
 
 import HomeView from './views/HomeView.vue'
-import PlaygroundView from './views/PlaygroundView.vue'
-import UserLogsView from './views/UserLogsView.vue'
-import UserLogsTableView from './views/UserLogsTableView.vue'
-import SettingsView from './views/SettingsView.vue'
-import OrdersView from './views/OrdersView.vue'
-import AdminOrdersView from './views/AdminOrdersView.vue'
-import InviteView from './views/InviteView.vue'
-import DocsView from './views/DocsView.vue'
-import AboutView from './views/AboutView.vue'
-import OverviewView from './views/OverviewView.vue'
-import ModelsView from './views/ModelsView.vue'
-import AccountsView from './views/AccountsView.vue'
-import UsersView from './views/UsersView.vue'
-import ConcurrencyView from './views/ConcurrencyView.vue'
-import BannedWordsView from './views/BannedWordsView.vue'
-import BannedWordHitsView from './views/BannedWordHitsView.vue'
-import CdksView from './views/CdksView.vue'
-import InvitesAdminView from './views/InvitesAdminView.vue'
-import ImagesView from './views/ImagesView.vue'
-import LogsView from './views/LogsView.vue'
-import ConfigView from './views/ConfigView.vue'
-import ShowcaseView from './views/ShowcaseView.vue'
+const PlaygroundView = () => import('./views/PlaygroundView.vue')
+const UserLogsView = () => import('./views/UserLogsView.vue')
+const UserLogsTableView = () => import('./views/UserLogsTableView.vue')
+const SettingsView = () => import('./views/SettingsView.vue')
+const OrdersView = () => import('./views/OrdersView.vue')
+const AdminOrdersView = () => import('./views/AdminOrdersView.vue')
+const InviteView = () => import('./views/InviteView.vue')
+const DocsView = () => import('./views/DocsView.vue')
+const AboutView = () => import('./views/AboutView.vue')
+const OverviewView = () => import('./views/OverviewView.vue')
+const ModelsView = () => import('./views/ModelsView.vue')
+const AccountsView = () => import('./views/AccountsView.vue')
+const UsersView = () => import('./views/UsersView.vue')
+const ConcurrencyView = () => import('./views/ConcurrencyView.vue')
+const BannedWordsView = () => import('./views/BannedWordsView.vue')
+const BannedWordHitsView = () => import('./views/BannedWordHitsView.vue')
+const CdksView = () => import('./views/CdksView.vue')
+const InvitesAdminView = () => import('./views/InvitesAdminView.vue')
+const ImagesView = () => import('./views/ImagesView.vue')
+const LogsView = () => import('./views/LogsView.vue')
+const ConfigView = () => import('./views/ConfigView.vue')
+const ShowcaseView = () => import('./views/ShowcaseView.vue')
 
 const routes = [
   {

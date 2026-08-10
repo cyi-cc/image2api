@@ -125,6 +125,7 @@ type ModelConfig struct {
 	Alias          string            `gorm:"column:alias;size:255;not null;default:''"`
 	Provider       string            `gorm:"size:100;index;not null"`
 	Enabled        bool              `gorm:"not null;default:true"`
+	FreeAllowed    bool              `gorm:"not null;default:false"` // 普号(free)能否调度此模型，默认不可用
 	Ratios         datatypes.JSON    `gorm:"type:jsonb"`
 	Prices         datatypes.JSONMap `gorm:"type:jsonb"`
 	Resolutions    datatypes.JSON    `gorm:"type:jsonb"`

@@ -251,7 +251,7 @@ func cloneMap(in map[string]any) map[string]any {
 	return out
 }
 
-func BuildVideoPayload(engine, prompt, aspectRatio string, durationSeconds int, resolution, referenceMode, upstreamModel string, blobIDs []string) map[string]any {
+func BuildVideoPayload(engine, prompt, aspectRatio string, durationSeconds int, resolution, referenceMode, upstreamModel string, blobIDs, videoBlobIDs, audioBlobIDs []string) map[string]any {
 	seedVal := rand.Intn(999999)
 	engine = defaultString(engine, "sora2")
 	resolution = defaultString(resolution, "720p")
@@ -274,10 +274,10 @@ func BuildVideoPayload(engine, prompt, aspectRatio string, durationSeconds int, 
 			"prompt":                     prompt,
 			"seeds":                      []int{seedVal},
 			"sizes":                      []any{map[string]any{"width": w, "height": h, "numFrames": frames}},
-			"videoSettings":             map[string]any{},
-			"locale":                    "en-US",
-			"generationMetadata":        map[string]any{"module": "text2video", "submodule": "ff-video-generate"},
-			"output":                    map[string]any{"storeInputs": true},
+			"videoSettings":              map[string]any{},
+			"locale":                     "en-US",
+			"generationMetadata":         map[string]any{"module": "text2video", "submodule": "ff-video-generate"},
+			"output":                     map[string]any{"storeInputs": true},
 		}
 		if len(blobIDs) > 0 {
 			conds := make([]any, 0, 2)
@@ -307,7 +307,7 @@ func BuildVideoPayload(engine, prompt, aspectRatio string, durationSeconds int, 
 			"prompt":         prompt,
 			"negativePrompt": "",
 			"duration":       durationSeconds,
-			"generateAudio":  true,
+			"generateAudio":  false,
 			"generationMetadata": map[string]any{
 				"module":    "text2video",
 				"submodule": "ff-video-generate",
@@ -331,23 +331,26 @@ func BuildVideoPayload(engine, prompt, aspectRatio string, durationSeconds int, 
 		}
 		return payload
 	case "seedance-fast", "seedance-2.0":
+		// Adobe's Fast tier is spelled seedance_2.0_fast in the Firefly
+		// payload.  Do not use Leonardo's seedance-2.0-fast upstream ID here:
+		// the two providers expose the same family with different wire formats.
 		modelVersion := "seedance_2.0"
 		if engine == "seedance-fast" {
 			modelVersion = "seedance_2.0_fast"
 		}
 		payload := map[string]any{
-			"modelId":              "seedance",
-			"modelVersion":         modelVersion,
-			"size":                 videoSize(aspectRatio, resolution),
-			"seeds":                []int{seedVal},
-			"prompt":               prompt,
-			"negativePrompt":       "",
-			"duration":             durationSeconds,
-			"generateAudio":        true,
-			"generationSettings":   map[string]any{"aspectRatio": aspectRatio},
-			"generationMetadata":   map[string]any{"module": "text2video", "submodule": "ff-video-generate"},
-			"output":               map[string]any{"storeInputs": true},
-			"referenceBlobs":       []any{},
+			"modelId":            "seedance",
+			"modelVersion":       modelVersion,
+			"size":               videoSize(aspectRatio, resolution),
+			"seeds":              []int{seedVal},
+			"prompt":             prompt,
+			"negativePrompt":     "",
+			"duration":           durationSeconds,
+			"generateAudio":      true,
+			"generationSettings": map[string]any{"aspectRatio": aspectRatio},
+			"generationMetadata": map[string]any{"module": "text2video", "submodule": "ff-video-generate"},
+			"output":             map[string]any{"storeInputs": true},
+			"referenceBlobs":     []any{},
 		}
 		if len(blobIDs) > 0 {
 			payload["generationMetadata"] = map[string]any{"module": "image2video", "submodule": "ff-video-generate"}

@@ -54,11 +54,16 @@ async function generateKey() {
   toast('新 Key 已生成 — 请立刻复制保存(只显示这一次)')
 }
 
+// Only the just-minted plaintext is copyable — the server-side preview is a mask
+// (…abcd), so copying it would hand out a key that can never authenticate.
 async function copyKey() {
-  if (!hasKey.value) return
+  if (!apiKey.value) {
+    toast('完整 Key 仅生成时显示一次,已无法找回 — 请重新生成')
+    return
+  }
   try {
-    await navigator.clipboard.writeText(apiKey.value || keyPreview.value)
-    toast(apiKey.value ? '已复制完整 Key' : '完整 Key 仅生成时显示一次,这里只能复制预览')
+    await navigator.clipboard.writeText(apiKey.value)
+    toast('已复制完整 Key')
   } catch { toast('复制失败') }
 }
 
@@ -276,7 +281,7 @@ async function recharge() {
               </div>
               <h2 class="text-xl font-bold mt-4">API Key</h2>
               <p class="text-sm text-white/50 mt-2 leading-relaxed">
-                调用 <code class="bg-white/10 text-white/90 px-1 py-0.5 rounded text-xs">/v1/*</code> 接口需要的访问密钥。会保存在浏览器本地。
+                调用 <code class="bg-white/10 text-white/90 px-1 py-0.5 rounded text-xs">/v1/*</code> 接口需要的访问密钥。完整密钥不保存，仅生成时显示一次。
               </p>
             </div>
             <div>
@@ -290,7 +295,9 @@ async function recharge() {
                   {{ apiKeyRevealed ? '隐藏' : '显示' }}
                 </button>
                 <button @click="copyKey"
-                        class="text-xs rounded-lg px-2.5 py-1.5 ring-1 ring-white/10 hover:bg-white/[0.06] hover:ring-white/20 transition-all">
+                        :title="apiKey ? '复制完整 Key' : '完整 Key 仅生成时显示一次，已无法找回'"
+                        class="text-xs rounded-lg px-2.5 py-1.5 ring-1 ring-white/10 transition-all hover:bg-white/[0.06] hover:ring-white/20"
+                        :class="!apiKey && 'opacity-40'">
                   复制
                 </button>
               </div>

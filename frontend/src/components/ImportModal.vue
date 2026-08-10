@@ -113,7 +113,7 @@ async function doSmartImport() {
           全粘进来即可，无需任何前缀。
         </p>
         <p class="text-xs text-rose-500 mb-3 leading-relaxed bg-rose-50 rounded px-3 py-2 border border-rose-200">
-          📢 需要购买 Adobe 号请联系 QQ：432539
+          📢 需要购买 Adobe 号请联系 QQ：28998306
         </p>
         <textarea v-model="input" rows="10"
                   class="field font-mono text-xs resize-none"
