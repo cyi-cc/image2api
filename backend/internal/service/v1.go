@@ -3046,7 +3046,7 @@ func (s *V1Service) leonardoPersistCookie(ctx context.Context, tokenID, cookie s
 	if !ok || strings.TrimSpace(fresh) == "" {
 		return cookie
 	}
-	_, _ = s.tokens.Update(ctx, "leonardo", tokenID, map[string]any{"value": fresh})
+	_, _ = s.tokens.SwapValue(ctx, "leonardo", tokenID, cookie, fresh)
 	return fresh
 }
 
@@ -3058,6 +3058,7 @@ func (s *V1Service) reconcileLeonardoCredits(ctx context.Context, tokenID, cooki
 		return
 	}
 	data, err := s.leonardo.FetchCreditsBalance(ctx, cookie)
+	s.leonardoPersistCookie(ctx, tokenID, cookie)
 	if err != nil {
 		return
 	}

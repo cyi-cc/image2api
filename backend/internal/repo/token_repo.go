@@ -87,6 +87,23 @@ func (r *TokenRepository) Update(ctx context.Context, pool, id string, patch map
 	return r.Get(ctx, pool, id)
 }
 
+// SwapValue replaces an account's credential only while the stored one is still
+// the value the caller started from. A rotating cookie is minted from whatever
+// was in the row, so a goroutine that has been holding an older copy (a long
+// render, a slow quota probe) must NOT be allowed to write it back over a newer
+// rotation — that older copy no longer authenticates, and the account then looks
+// dead. Reports whether the row was updated.
+func (r *TokenRepository) SwapValue(ctx context.Context, pool, id, from, to string) (bool, error) {
+	res := r.db.WithContext(ctx).
+		Model(&model.TokenAccount{}).
+		Where("pool = ? AND id = ? AND value = ?", pool, id, from).
+		Updates(map[string]any{"value": to, "updated_at": time.Now()})
+	if res.Error != nil {
+		return false, res.Error
+	}
+	return res.RowsAffected > 0, nil
+}
+
 // ReserveQuota atomically pre-deducts `amount` from an account's cached image
 // token balance under a row lock, so concurrent picks of the same near-empty
 // account can never over-commit it. Returns:

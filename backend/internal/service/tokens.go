@@ -195,10 +195,10 @@ func (s *TokenService) RefreshLeonardoSessions(ctx context.Context) {
 				}
 				continue // leave the stamp alone so the next tick retries
 			}
-			fields := map[string]any{}
 			if fresh, ok := s.leonardo.RotatedCookie(a.Value); ok && strings.TrimSpace(fresh) != "" {
-				fields["value"] = fresh
+				_, _ = s.tokens.SwapValue(callCtx, "leonardo", a.ID, a.Value, fresh)
 			}
+			fields := map[string]any{}
 			meta := cloneJSONMap(a.Meta)
 			meta[leonardoKeptAtKey] = int(time.Now().Unix())
 			fields["meta"] = meta
@@ -459,7 +459,7 @@ func (s *TokenService) persistLeonardoCookie(ctx context.Context, tokenID, cooki
 		return
 	}
 	if fresh, ok := s.leonardo.RotatedCookie(cookie); ok && strings.TrimSpace(fresh) != "" {
-		_, _ = s.tokens.Update(ctx, "leonardo", tokenID, map[string]any{"value": fresh})
+		_, _ = s.tokens.SwapValue(ctx, "leonardo", tokenID, cookie, fresh)
 	}
 }
 
