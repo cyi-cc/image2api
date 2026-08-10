@@ -207,6 +207,9 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 	var setCookies []string
 	var err error
 	var warmed bool
+	// 401 from cross-origin-cookie means Leonardo已经作废了这个 session（不是人机校验），
+	// 记下来好把日志写成"会话被吊销"而不是含糊的 get-session null。
+	warmStatus := 0
 	for attempt := 0; attempt < getSessionAttempts; attempt++ {
 		if attempt > 0 {
 			select {
@@ -227,7 +230,9 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 		// better-auth cookie cache (and CF_Access_Token). Without it get-session
 		// answers 200 null even for a perfectly healthy cookie.
 		warmed = false
-		if warmCookies, werr := c.warmSession(ctx, client, send); werr == nil {
+		warmCookies, wstatus, werr := c.warmSession(ctx, client, send)
+		warmStatus = wstatus
+		if werr == nil {
 			warmed = true
 			if merged := mergeCookies(send, warmCookies); merged != send && keepsSession(merged) {
 				send = merged
@@ -284,6 +289,10 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 		return nil, fmt.Errorf("%w: get-session non-json", ErrTemporaryUpstream)
 	}
 	if strings.TrimSpace(raw.Session.AccessToken) == "" {
+		if warmStatus == 401 {
+			// Leonardo 明确拒了这份 session_token：服务端已把会话吊销，重新导入 cookie 才能恢复。
+			return nil, fmt.Errorf("%w: session revoked (cross-origin-cookie 401)", ErrAuth)
+		}
 		if !warmed {
 			// A cold get-session (the cookie cache was never refreshed) answers null
 			// for healthy accounts too — temporary, never a reason to kill the account.
@@ -321,23 +330,23 @@ func (c *Client) GetSession(ctx context.Context, cookie string) (*Session, error
 // warmSession calls cross-origin-cookie, whose response refreshes better-auth's
 // cookie cache and CF_Access_Token. It returns the Set-Cookie headers; a
 // checkpoint answer (403/429) is an error, since get-session would then be cold.
-func (c *Client) warmSession(ctx context.Context, client tlsclient.HttpClient, cookie string) ([]string, error) {
+func (c *Client) warmSession(ctx context.Context, client tlsclient.HttpClient, cookie string) ([]string, int, error) {
 	req, err := http.NewRequest(http.MethodGet, appBase+"/api/auth/cross-origin-cookie", nil)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	req = req.WithContext(ctx)
 	req.Header = sessionHeader(cookie)
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode == 403 || resp.StatusCode == 429 {
-		return nil, fmt.Errorf("cross-origin-cookie http %d", resp.StatusCode)
+		return nil, resp.StatusCode, fmt.Errorf("cross-origin-cookie http %d", resp.StatusCode)
 	}
-	return resp.Header["Set-Cookie"], nil
+	return resp.Header["Set-Cookie"], resp.StatusCode, nil
 }
 
 // fetchSession performs one get-session call and returns its status, body and
