@@ -172,6 +172,7 @@ func (s *TokenService) RefreshLeonardoSessions(ctx context.Context) {
 		}
 		due := time.Now().Add(-leonardoKeepaliveEvery).Unix()
 		proxied := false
+		renewed, failed := 0, 0
 		for i := range items {
 			a := items[i]
 			if a.Dead || a.Status == "disabled" || strings.TrimSpace(a.Value) == "" {
@@ -188,6 +189,7 @@ func (s *TokenService) RefreshLeonardoSessions(ctx context.Context) {
 			_, err := s.leonardo.ProbeSession(callCtx, a.Value)
 			if err != nil {
 				cancel()
+				failed++
 				if errors.Is(err, leonardo.ErrAuth) {
 					log.Printf("leonardo %s: session keepalive auth failure (%v)", a.ID, err)
 				}
@@ -202,6 +204,10 @@ func (s *TokenService) RefreshLeonardoSessions(ctx context.Context) {
 			fields["meta"] = meta
 			_, _ = s.tokens.Update(callCtx, "leonardo", a.ID, fields)
 			cancel()
+			renewed++
+		}
+		if renewed > 0 || failed > 0 {
+			log.Printf("leonardo: session keepalive renewed %d, failed %d", renewed, failed)
 		}
 	}()
 }

@@ -63,6 +63,10 @@ func NewMaintenanceService(tokens *repo.TokenRepository, tokenSvc *TokenService,
 func (m *MaintenanceService) Run(ctx context.Context) {
 	ticker := time.NewTicker(m.interval)
 	defer ticker.Stop()
+	// The leonardo session keep-alive gets its own loop: one tick() can take tens
+	// of minutes (219 adobe cookie profiles alone), which would stretch a 5-minute
+	// keep-alive to the tick's real duration.
+	go m.runLeonardoKeepalive(ctx)
 	m.tick(ctx)
 	for {
 		select {
@@ -70,6 +74,25 @@ func (m *MaintenanceService) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			m.tick(ctx)
+		}
+	}
+}
+
+// runLeonardoKeepalive re-checks every minute which leonardo accounts are due for
+// a session renewal (the 5-minute due-ness itself is read per account from the DB,
+// so a restart can't skip one).
+func (m *MaintenanceService) runLeonardoKeepalive(ctx context.Context) {
+	if m.tokenSvc == nil {
+		return
+	}
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		m.tokenSvc.RefreshLeonardoSessions(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
 		}
 	}
 }
@@ -165,12 +188,6 @@ func (m *MaintenanceService) tick(ctx context.Context) {
 		//     means the membership lapsed → disable+dead; otherwise re-sync the
 		//     credits balance and 恢复时间 (from the credits' weekly reset).
 		m.tokenSvc.RefreshGrokLiveness(ctx)
-		// 1f. Keep leonardo's better-auth session rolling: get-session extends the
-		//     session and rotates the cookie, so re-minting stops a dormant
-		//     account's cookie from lapsing (a lapsed one can only be fixed by
-		//     re-importing a browser cookie). Due-ness is read per account from
-		//     meta["session_kept_at"], so a restart can't skip a renewal.
-		m.tokenSvc.RefreshLeonardoSessions(ctx)
 	}
 
 	// 2. Auto-renew Adobe cookies whose refresh interval has elapsed.
