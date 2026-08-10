@@ -53,7 +53,7 @@ func (c *Client) GenerateVideo(ctx context.Context, cookie, model, prompt string
 		if len(img) == 0 {
 			continue
 		}
-		uploadID, upErr := c.uploadAsset(ctx, cookie, assetExtension(img, "png"), img)
+		uploadID, upErr := c.uploadInitImage(ctx, cookie, assetExtension(img, "png"), img)
 		if upErr != nil {
 			return nil, nil, upErr
 		}
@@ -64,24 +64,6 @@ func (c *Client) GenerateVideo(ctx context.Context, cookie, model, prompt string
 	}
 	if len(imageRefs) > 0 {
 		guidances["image_reference"] = imageRefs
-	}
-	var audioRefs []map[string]any
-	for _, aud := range refs.Audios {
-		if len(aud) == 0 {
-			continue
-		}
-		uploadID, upErr := c.uploadAsset(ctx, cookie, assetExtension(aud, "mp3"), aud)
-		if upErr != nil {
-			return nil, nil, upErr
-		}
-		audio := map[string]any{"id": uploadID, "type": "UPLOADED"}
-		if secs := MediaDurationSeconds(aud); secs > 0 {
-			audio["duration"] = secs
-		}
-		audioRefs = append(audioRefs, map[string]any{"audio": audio})
-	}
-	if len(audioRefs) > 0 {
-		guidances["audio_reference"] = audioRefs
 	}
 	var videoRefs []map[string]any
 	for _, vid := range refs.Videos {
@@ -100,6 +82,29 @@ func (c *Client) GenerateVideo(ctx context.Context, cookie, model, prompt string
 	}
 	if len(videoRefs) > 0 {
 		guidances["video_reference_base"] = videoRefs
+	}
+	// Leonardo rejects an audio reference that isn't paired with an image or
+	// video reference (audio_reference_only_compatible_with_image_or_video_reference).
+	var audioRefs []map[string]any
+	for _, aud := range refs.Audios {
+		if len(aud) == 0 {
+			continue
+		}
+		if len(imageRefs) == 0 && len(videoRefs) == 0 {
+			return nil, nil, errors.New("leonardo: audio reference requires an image or video reference")
+		}
+		uploadID, upErr := c.uploadAsset(ctx, cookie, assetExtension(aud, "mp3"), aud)
+		if upErr != nil {
+			return nil, nil, upErr
+		}
+		audio := map[string]any{"id": uploadID, "type": "UPLOADED"}
+		if secs := MediaDurationSeconds(aud); secs > 0 {
+			audio["duration"] = secs
+		}
+		audioRefs = append(audioRefs, map[string]any{"audio": audio})
+	}
+	if len(audioRefs) > 0 {
+		guidances["audio_reference"] = audioRefs
 	}
 
 	parameters := map[string]any{
