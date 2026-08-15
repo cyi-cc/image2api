@@ -15,6 +15,7 @@ import (
 	"backend/internal/model"
 	"backend/internal/provider/adobe"
 	"backend/internal/provider/chatgpt"
+	"backend/internal/provider/creativefabrica"
 	"backend/internal/provider/imagine"
 	"backend/internal/provider/krea"
 	"backend/internal/provider/leonardo"
@@ -35,6 +36,7 @@ var validTokenPools = map[string]string{
 	"imagine":  "imagine",
 	"grok":     "grok",
 	"custom":   "custom",
+	"creativefabrica": "creativefabrica",
 }
 
 type TokenService struct {
@@ -49,6 +51,7 @@ type TokenService struct {
 	krea     *krea.Client
 	imagine  *imagine.Client
 	grok     *grok.Client
+	cf       *creativefabrica.Client
 	// sem caps concurrent background pending-probe goroutines (mirrors Python's
 	// 10-worker _quota_check_pool) so a big paste doesn't fire hundreds of
 	// simultaneous upstream requests.
@@ -61,7 +64,7 @@ type TokenService struct {
 	leonardoKeeping atomic.Bool
 }
 
-func NewTokenService(tokens *repo.TokenRepository, refresh *repo.RefreshProfileRepository, events *repo.EventRepository, settings *repo.SiteSettingRepository, adobeClient *adobe.Client, chatGPTClient *chatgpt.Client, runwayClient *runway.Client, leonardoClient *leonardo.Client, kreaClient *krea.Client, imagineClient *imagine.Client, grokClient *grok.Client) *TokenService {
+func NewTokenService(tokens *repo.TokenRepository, refresh *repo.RefreshProfileRepository, events *repo.EventRepository, settings *repo.SiteSettingRepository, adobeClient *adobe.Client, chatGPTClient *chatgpt.Client, runwayClient *runway.Client, leonardoClient *leonardo.Client, kreaClient *krea.Client, imagineClient *imagine.Client, grokClient *grok.Client, cfClient *creativefabrica.Client) *TokenService {
 	return &TokenService{
 		tokens:   tokens,
 		refresh:  refresh,
@@ -74,6 +77,7 @@ func NewTokenService(tokens *repo.TokenRepository, refresh *repo.RefreshProfileR
 		krea:     kreaClient,
 		imagine:  imagineClient,
 		grok:     grokClient,
+		cf:       cfClient,
 		sem:      make(chan struct{}, 10),
 	}
 }
@@ -101,6 +105,9 @@ func (s *TokenService) applyProxy(ctx context.Context) {
 	}
 	if s.grok != nil {
 		s.grok.SetProxy(proxy)
+	}
+	if s.cf != nil {
+		s.cf.SetProxy(proxy)
 	}
 }
 
@@ -1127,6 +1134,85 @@ func (s *TokenService) RefreshGrokLiveness(ctx context.Context) {
 	}
 }
 
+// ImportCreativeFabricaCookie imports a Creative Fabrica session cookie the same
+// way Adobe does (paste the whole Cookie header; JSON array/object accepted).
+// The cookie IS the credential — a fresh short-lived JWT is minted on demand via
+// /query/userAuth, so no RefreshProfile is registered (there is nothing to
+// refresh). Accounts are one-shot: their coins buy exactly one generation, so a
+// successful render disables the account (see generateCreativeFabricaVideo).
+func (s *TokenService) ImportCreativeFabricaCookie(ctx context.Context, cookie, tokenID string) (*model.TokenAccount, error) {
+	cookie = cleanAdobeCookie(cookie)
+	if cookie == "" {
+		return nil, errors.New("cookie required")
+	}
+	if tokenID == "" {
+		tokenID = newTokenID("creativefabrica")
+	}
+	meta := datatypes.JSONMap{"pending_check": true}
+	item, err := s.createToken(ctx, "creativefabrica", tokenID, cookie, "pending", meta)
+	if err != nil {
+		if errors.Is(err, gorm.ErrDuplicatedKey) {
+			item, err = s.tokens.Update(ctx, "creativefabrica", tokenID, map[string]any{
+				"status": "pending",
+				"meta":   meta,
+			})
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			return nil, err
+		}
+	}
+	go s.checkPendingCreativeFabrica(tokenID, cookie)
+	return item, nil
+}
+
+// checkPendingCreativeFabrica probes a freshly imported cookie off-thread:
+// /query/userAuth must mint a token (else the cookie is dead), then best-effort
+// balance hydration. Balance of exactly 0 means the account can't generate →
+// dead.
+func (s *TokenService) checkPendingCreativeFabrica(tokenID, cookie string) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("token import: creativefabrica pending check panicked for %s: %v", tokenID, r)
+		}
+	}()
+	s.sem <- struct{}{}
+	defer func() { <-s.sem }()
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	if s.cf == nil {
+		s.finishPending(ctx, "creativefabrica", tokenID, "disabled", true, nil)
+		return
+	}
+	if _, _, err := s.cf.ExchangeToken(ctx, cookie); err != nil {
+		log.Printf("token import: creativefabrica %s cookie failed to authenticate, marking dead: %v", tokenID, err)
+		s.finishPending(ctx, "creativefabrica", tokenID, "disabled", true, nil)
+		return
+	}
+	meta := map[string]any{}
+	// Best-effort profile hydration: the studio browser hits /query/user on
+	// every page load, so the email is free to grab here (avoids 邮箱列 showing
+	// the raw id).
+	if email, e := s.cf.FetchUser(ctx, cookie); e == nil && strings.TrimSpace(email) != "" {
+		if _, uerr := s.tokens.Update(ctx, "creativefabrica", tokenID, map[string]any{"account_email": strings.TrimSpace(email)}); uerr != nil {
+			log.Printf("token import: creativefabrica %s email write failed: %v", tokenID, uerr)
+		}
+	}
+	if bal, e := s.cf.FetchBalance(ctx, cookie); e == nil {
+		meta["cached_quota_remaining"] = bal
+		meta["cached_quota_at"] = int(time.Now().Unix())
+		// One-shot accounts with zero coins left can't generate at all.
+		if bal <= 0 {
+			log.Printf("token import: creativefabrica %s has 0 coins, marking dead", tokenID)
+			s.finishPending(ctx, "creativefabrica", tokenID, "disabled", true, meta)
+			return
+		}
+	}
+	s.finishPending(ctx, "creativefabrica", tokenID, "active", false, meta)
+}
+
 // ImportCustomAccount adds an upstream as a custom account: base_url + key, the
 // csv list of model ids it serves (empty = all), plus optional weight and
 // per-account concurrency. No probe — the account goes active immediately and is
@@ -1723,8 +1809,33 @@ func (s *TokenService) Email(ctx context.Context, pool, id string) (map[string]a
 		}
 		return map[string]any{"email": nil, "cached": false}, nil
 	}
-	if poolToType(item.Pool) != "adobe" {
+	if poolToType(item.Pool) != "adobe" && poolToType(item.Pool) != "creativefabrica" {
 		return map[string]any{"email": nil}, nil
+	}
+	if poolToType(item.Pool) == "creativefabrica" {
+		email := strings.TrimSpace(item.AccountEmail)
+		if email != "" {
+			return map[string]any{"email": email, "cached": true}, nil
+		}
+		if s.cf == nil {
+			return map[string]any{"email": nil, "cached": false}, nil
+		}
+		fetched, err := s.cf.FetchUser(ctx, item.Value)
+		if err != nil {
+			if errors.Is(err, creativefabrica.ErrAuth) {
+				_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{
+					"status": "disabled",
+					"dead":   true,
+					"fails":  gorm.Expr("fails + 1"),
+				})
+			}
+			return nil, err
+		}
+		if fetched = strings.TrimSpace(fetched); fetched != "" {
+			_, _ = s.tokens.Update(ctx, item.Pool, item.ID, map[string]any{"account_email": fetched})
+			email = fetched
+		}
+		return map[string]any{"email": emptyToNil(email), "cached": false}, nil
 	}
 	email := strings.TrimSpace(item.AccountEmail)
 	if email == "" {
@@ -1810,7 +1921,7 @@ func accountRow(item model.TokenAccount, inFlight int64) map[string]any {
 		}
 		grokImages, grokVideos = images, videos
 	}
-	hasQuota := typeLabel == "openai" || typeLabel == "adobe" || typeLabel == "runway" || typeLabel == "leonardo" || typeLabel == "krea" || typeLabel == "imagine" || typeLabel == "grok"
+	hasQuota := typeLabel == "openai" || typeLabel == "adobe" || typeLabel == "runway" || typeLabel == "leonardo" || typeLabel == "krea" || typeLabel == "imagine" || typeLabel == "grok" || typeLabel == "creativefabrica"
 	return map[string]any{
 		"id":                item.ID,
 		"pool":              item.Pool,
@@ -2000,6 +2111,9 @@ func newTokenID(pool string) string {
 	}
 	if pool == "imagine" {
 		prefix = "IM"
+	}
+	if pool == "creativefabrica" {
+		prefix = "CF"
 	}
 	return prefix + randomUpper(10)
 }

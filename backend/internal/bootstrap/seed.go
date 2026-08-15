@@ -55,6 +55,23 @@ func seedDefaults(ctx context.Context, db *gorm.DB) error {
 			return err
 		}
 	}
+	// Adobe 的 Seedance 目录 ID 带 adobe- 前缀（与 Leonardo 私有款区分）；把旧 ID
+	// 的存量行改名，保留计价配置、次数和历史日志归属。
+	for _, r := range [][2]string{
+		{"seedance-2.0", "adobe-seedance-2.0"},
+		{"seedance-2.0-fast", "adobe-seedance-2.0-fast"},
+	} {
+		if err := db.WithContext(ctx).Exec(
+			`UPDATE model_configs SET id = ? WHERE id = ?
+			 AND NOT EXISTS (SELECT 1 FROM model_configs WHERE id = ?)`,
+			r[1], r[0], r[1]).Error; err != nil {
+			return err
+		}
+		if err := db.WithContext(ctx).Exec(
+			`UPDATE event_logs SET model = ? WHERE model = ?`, r[1], r[0]).Error; err != nil {
+			return err
+		}
+	}
 	// One-time backfill of the persistent per-model generation counter from
 	// historical success logs, so the admin "次数" keeps its running total when we
 	// switch it off the (retention-pruned) event_log. Only touches models still at

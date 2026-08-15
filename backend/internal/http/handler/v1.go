@@ -292,19 +292,24 @@ func rawToString(raw json.RawMessage) string {
 }
 
 // videoSizeToInternal maps OpenAI's "WxH" size to our aspect ratio + resolution
-// tier (height ≥1080 → 1080p, else 720p).
+// tier. An absent/unparsable size leaves the resolution empty so the caller can
+// fall back to whatever tier the model actually prices — hardcoding 720p here
+// rejects models that only offer 1440p.
 func videoSizeToInternal(size string) (ratio, resolution string) {
 	var w, h int
 	if s := strings.TrimSpace(strings.ToLower(size)); s != "" {
 		_, _ = fmt.Sscanf(s, "%dx%d", &w, &h)
 	}
 	if w == 0 || h == 0 {
-		return "16:9", "720p"
+		return "16:9", ""
 	}
 	// The "p" resolution is the SHORT edge (720p = 1280×720, 1080p = 1920×1080),
 	// so a standard 1280×720 must read as 720p — not 1080p off the long edge.
 	resolution = "720p"
-	if min(w, h) >= 1080 {
+	switch {
+	case min(w, h) >= 1440:
+		resolution = "1440p"
+	case min(w, h) >= 1080:
 		resolution = "1080p"
 	}
 	return guessRatioWH(w, h), resolution

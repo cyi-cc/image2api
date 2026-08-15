@@ -12,7 +12,9 @@ function declared(v) {
 // 参考资产时返回 null。model 兼容 /managed-models(type) 与 /models(kind) 两种字段。
 export function mediaCaps(model, preset) {
   if ((model?.type || model?.kind) !== 'video') return null
-  const isSeedance = /^seedance/.test(model?.id || '')
+  // creativefabrica 上游只收图片参考(VIDEO_FRAME_TYPE_REFERENCE),不收视频/音频;
+  // 它虽然叫 seedance,但要排除,否则会错误地显示「视频 3 音频 3」。
+  const isSeedance = /^seedance/.test(model?.id || '') && (model?.provider || '') !== 'creativefabrica'
   const videos = declared(preset?.max_videos) ?? (isSeedance ? SEEDANCE_FALLBACK.videos : 0)
   const audios = declared(preset?.max_audios) ?? (isSeedance ? SEEDANCE_FALLBACK.audios : 0)
   if (!videos && !audios) return null

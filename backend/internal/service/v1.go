@@ -23,6 +23,7 @@ import (
 	"backend/internal/provider/adobe"
 	"backend/internal/provider/chatgpt"
 	"backend/internal/provider/custom"
+	"backend/internal/provider/creativefabrica"
 	"backend/internal/provider/grok"
 	"backend/internal/provider/imagine"
 	"backend/internal/provider/krea"
@@ -80,6 +81,7 @@ type V1Service struct {
 	imagine  *imagine.Client
 	grok     *grok.Client
 	custom   *custom.Client
+	cf       *creativefabrica.Client
 	store    *storage.Client
 	// refresh re-mints an Adobe access token from its cookie when a request hits a
 	// 401 mid-flight (set via SetRefresh — wired after construction to avoid an
@@ -227,7 +229,7 @@ type V1VideoRequest struct {
 	AccountID string
 }
 
-func NewV1Service(cfg *config.Config, models *repo.ModelRepository, users *repo.UserRepository, events *repo.EventRepository, tokens *repo.TokenRepository, settings *repo.SiteSettingRepository, cgroups *repo.ConcurrencyGroupRepository, conc *ConcurrencyService, adobeClient *adobe.Client, chatGPTClient *chatgpt.Client, runwayClient *runway.Client, leonardoClient *leonardo.Client, kreaClient *krea.Client, imagineClient *imagine.Client, grokClient *grok.Client, customClient *custom.Client, store *storage.Client) *V1Service {
+func NewV1Service(cfg *config.Config, models *repo.ModelRepository, users *repo.UserRepository, events *repo.EventRepository, tokens *repo.TokenRepository, settings *repo.SiteSettingRepository, cgroups *repo.ConcurrencyGroupRepository, conc *ConcurrencyService, adobeClient *adobe.Client, chatGPTClient *chatgpt.Client, runwayClient *runway.Client, leonardoClient *leonardo.Client, kreaClient *krea.Client, imagineClient *imagine.Client, grokClient *grok.Client, customClient *custom.Client, cfClient *creativefabrica.Client, store *storage.Client) *V1Service {
 	return &V1Service{
 		cfg:      cfg,
 		models:   models,
@@ -245,6 +247,7 @@ func NewV1Service(cfg *config.Config, models *repo.ModelRepository, users *repo.
 		imagine:  imagineClient,
 		grok:     grokClient,
 		custom:   customClient,
+		cf:       cfClient,
 		store:    store,
 		inflight: &InflightRegistry{},
 	}
@@ -808,6 +811,8 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 		videoBytes, videoURL, execErr = s.generateLeonardoVideo(genCtx, eventID, modelItem, in, aspectRatio, parseDurationSeconds(duration), !urlOnly)
 	case "custom":
 		videoBytes, videoURL, execErr = s.generateCustomVideo(genCtx, eventID, modelItem, in, aspectRatio, resolution, parseDurationSeconds(duration), !urlOnly)
+	case "creativefabrica":
+		videoBytes, videoURL, execErr = s.generateCreativeFabricaVideo(genCtx, eventID, modelItem, in, aspectRatio, !urlOnly)
 	default:
 		_ = s.refundIfNeeded(ctx, principal, eventID, price)
 		_ = s.events.UpdateStatus(ctx, eventID, "failed", "provider not implemented", 0)
@@ -819,11 +824,11 @@ func (s *V1Service) prepareVideoExecution(ctx context.Context, principal *APIPri
 		switch {
 		case errors.Is(execErr, ErrNoProviderAccount):
 			return nil, ErrNoProviderAccount
-		case errors.Is(execErr, adobe.ErrAuth), errors.Is(execErr, runway.ErrAuth), errors.Is(execErr, grok.ErrAuth), errors.Is(execErr, leonardo.ErrAuth), errors.Is(execErr, custom.ErrAuth):
+		case errors.Is(execErr, adobe.ErrAuth), errors.Is(execErr, runway.ErrAuth), errors.Is(execErr, grok.ErrAuth), errors.Is(execErr, leonardo.ErrAuth), errors.Is(execErr, custom.ErrAuth), errors.Is(execErr, creativefabrica.ErrAuth):
 			return nil, ErrProviderAuth
-		case errors.Is(execErr, adobe.ErrQuotaExhausted), errors.Is(execErr, runway.ErrQuotaExhausted), errors.Is(execErr, grok.ErrQuotaExhausted), errors.Is(execErr, leonardo.ErrQuotaExhausted), errors.Is(execErr, custom.ErrQuotaExhausted):
+		case errors.Is(execErr, adobe.ErrQuotaExhausted), errors.Is(execErr, runway.ErrQuotaExhausted), errors.Is(execErr, grok.ErrQuotaExhausted), errors.Is(execErr, leonardo.ErrQuotaExhausted), errors.Is(execErr, custom.ErrQuotaExhausted), errors.Is(execErr, creativefabrica.ErrQuotaExhausted):
 			return nil, ErrProviderQuota
-		case errors.Is(execErr, adobe.ErrTemporaryUpstream), errors.Is(execErr, runway.ErrTemporaryUpstream), errors.Is(execErr, grok.ErrTemporaryUpstream), errors.Is(execErr, leonardo.ErrTemporaryUpstream), errors.Is(execErr, custom.ErrTemporaryUpstream):
+		case errors.Is(execErr, adobe.ErrTemporaryUpstream), errors.Is(execErr, runway.ErrTemporaryUpstream), errors.Is(execErr, grok.ErrTemporaryUpstream), errors.Is(execErr, leonardo.ErrTemporaryUpstream), errors.Is(execErr, custom.ErrTemporaryUpstream), errors.Is(execErr, creativefabrica.ErrTemporaryUpstream):
 			return nil, ErrProviderTemporary
 		default:
 			return nil, fmt.Errorf("%w: %v", ErrProviderExecution, execErr)
@@ -920,28 +925,30 @@ func (s *V1Service) StartVideoJob(ctx context.Context, principal *APIPrincipal, 
 		s.logRejectedEvent(ctx, "video", in.Model, principal, in.Prompt, "v1", err.Error())
 		return nil, err
 	}
+	// Validate reference_mode against model capabilities and reference count
+	// BEFORE charging — a bad override must fail fast with no debit, never
+	// charge-then-reject (which would silently eat the user's credits).
+	modelItem, err := s.models.Get(ctx, strings.TrimSpace(in.Model))
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			s.logRejectedEvent(ctx, "video", in.Model, principal, in.Prompt, "v1", ErrUnknownModel.Error())
+			return nil, ErrUnknownModel
+		}
+		return nil, err
+	}
+	if rm := strings.TrimSpace(in.ReferenceMode); rm != "" {
+		if err := validateReferenceMode(rm, modelItem, len(in.ReferenceImages)); err != nil {
+			s.logRejectedEvent(ctx, "video", in.Model, principal, in.Prompt, "v1", err.Error())
+			return nil, err
+		}
+		if rm == modelItem.ReferenceMode {
+			in.ReferenceMode = "" // same as default, don't override
+		}
+	}
 	modelItem, resolution, aspectRatio, duration, price, err := s.prepareVideo(ctx, principal, in, true)
 	if err != nil {
 		s.logRejectedEvent(ctx, "video", in.Model, principal, in.Prompt, "v1", err.Error())
 		return nil, err
-	}
-	// Validate reference_mode against model capabilities and reference count.
-	if rm := strings.TrimSpace(in.ReferenceMode); rm != "" {
-		supported := strings.TrimSpace(modelItem.ReferenceMode)
-		if supported == "none" || supported == "" {
-			s.logRejectedEvent(ctx, "video", in.Model, principal, in.Prompt, "v1", "reference_mode not supported for this model")
-			return nil, errors.New("reference_mode not supported for this model")
-		}
-		if rm != "frame" && rm != "asset" {
-			s.logRejectedEvent(ctx, "video", in.Model, principal, in.Prompt, "v1", "reference_mode must be 'frame' or 'asset'")
-			return nil, errors.New("reference_mode must be 'frame' or 'asset'")
-		}
-		if rm == "frame" && len(in.ReferenceImages) > 2 {
-			return nil, fmt.Errorf("frame mode supports at most 2 reference images (first+last frame), got %d", len(in.ReferenceImages))
-		}
-		if strings.TrimSpace(in.ReferenceMode) == modelItem.ReferenceMode {
-			in.ReferenceMode = "" // same as default, don't override
-		}
 	}
 	// Source "v1": no output file is allocated — the result is the upstream URL,
 	// stored on the event when the render completes.
@@ -977,6 +984,8 @@ func (s *V1Service) runVideoJob(ctx context.Context, principal *APIPrincipal, in
 		_, videoURL, execErr = s.generateLeonardoVideo(genCtx, eventID, modelItem, in, aspectRatio, parseDurationSeconds(duration), false)
 	case "custom":
 		_, videoURL, execErr = s.generateCustomVideo(genCtx, eventID, modelItem, in, aspectRatio, resolution, parseDurationSeconds(duration), false)
+	case "creativefabrica":
+		_, videoURL, execErr = s.generateCreativeFabricaVideo(genCtx, eventID, modelItem, in, aspectRatio, false)
 	default:
 		_ = s.refundIfNeeded(ctx, principal, eventID, price)
 		_ = s.events.UpdateStatus(ctx, eventID, "failed", "provider not implemented", 0)
@@ -1379,7 +1388,14 @@ func (s *V1Service) prepareVideo(ctx context.Context, principal *APIPrincipal, i
 	}
 	resolution := strings.TrimSpace(in.Resolution)
 	if resolution == "" {
-		resolution = "720p"
+		// 调用方没指定档位时用模型自己配的第一档,而不是假定 720p ——
+		// 只卖 1440p 的模型会被 720p 判成"没定价"。
+		if resList := repo.JSONStrings(modelItem.Resolutions); len(resList) > 0 {
+			resolution = strings.TrimSpace(resList[0])
+		}
+		if resolution == "" {
+			resolution = "720p"
+		}
 	}
 	price, err := s.chargeForModel(ctx, principal, modelItem, "video", resolution, duration, 0, charge)
 	if err != nil {
@@ -1704,6 +1720,15 @@ func adobeErrClass(e error) (bool, bool, bool, bool) {
 	return errors.Is(e, adobe.ErrAuth), errors.Is(e, adobe.ErrQuotaExhausted), errors.Is(e, adobe.ErrTemporaryUpstream) || errors.Is(e, adobe.ErrRateLimited), errors.Is(e, adobe.ErrDeadUpstream)
 }
 
+// creativefabricaErrClass maps a creativefabrica upstream error onto the pool's
+// (auth, quota, temporary, dead) classification.
+func creativefabricaErrClass(e error) (bool, bool, bool, bool) {
+	return errors.Is(e, creativefabrica.ErrAuth),
+		errors.Is(e, creativefabrica.ErrQuotaExhausted),
+		errors.Is(e, creativefabrica.ErrTemporaryUpstream) || errors.Is(e, creativefabrica.ErrRateLimited),
+		errors.Is(e, creativefabrica.ErrDeadUpstream)
+}
+
 // noStore url-only mode: adobe returns a presigned image URL (meta["image_url"]);
 // skip the download and return it directly.
 func (s *V1Service) generateAdobeImage(ctx context.Context, eventID string, modelItem *model.ModelConfig, in V1ImageRequest, aspectRatio, resolution string, noStore bool) ([]byte, string, error) {
@@ -1903,6 +1928,75 @@ func (s *V1Service) generateAdobeVideo(ctx context.Context, eventID string, mode
 	}, adobeErrClass, func(id string) (model.TokenAccount, bool) {
 		return s.refreshAdobeToken(ctx, id)
 	}, true)
+	return data, videoURL, err
+}
+
+// maxCreativeFabricaRefs caps how many reference images a Creative Fabrica
+// generation may carry (the studio UI allows up to 9).
+const maxCreativeFabricaRefs = 9
+
+// generateCreativeFabricaVideo renders a video through the Creative Fabrica
+// Studio upstream. Accounts are ONE-SHOT: the coins buy exactly one generation,
+// so a successful render immediately disables the account. A fresh short-lived
+// JWT is minted from the stored cookie for every attempt (there is no
+// long-lived token to cache). Only image reference frames are supported.
+func (s *V1Service) generateCreativeFabricaVideo(ctx context.Context, eventID string, modelItem *model.ModelConfig, in V1VideoRequest, aspectRatio string, downloadResult bool) ([]byte, string, error) {
+	if s.cf == nil {
+		return nil, "", errors.New("creativefabrica client not configured")
+	}
+	if s.settings != nil {
+		if proxy, err := s.settings.GetValue(ctx, "proxy.url"); err == nil {
+			s.cf.SetProxy(proxy)
+		}
+	}
+
+	items, err := s.tokens.ListByPool(ctx, "creativefabrica")
+	if err != nil {
+		return nil, "", err
+	}
+	var active []model.TokenAccount
+	for _, item := range items {
+		if item.Status != "active" || item.Dead || strings.TrimSpace(item.Value) == "" {
+			continue
+		}
+		active = append(active, item)
+	}
+	active = pinTestAccount(items, active, in.AccountID)
+	if len(active) == 0 {
+		return nil, "", ErrNoProviderAccount
+	}
+	s.rotateRoundRobin("creativefabrica", active)
+
+	refLimit := modelItem.MaxReferenceImages
+	if refLimit <= 0 {
+		refLimit = maxCreativeFabricaRefs
+	}
+	refs, err := decodeReferenceImages(in.ReferenceImages, refLimit)
+	if err != nil {
+		return nil, "", err
+	}
+	// The studio only accepts image reference frames — reject video/audio refs.
+	for _, r := range refs {
+		if detectMediaType(r) != "image" {
+			return nil, "", errors.New("creativefabrica only supports image reference frames")
+		}
+	}
+
+	var videoURL string
+	data, err := s.runPoolWithFailover(ctx, eventID, "creativefabrica", active, "video", func(token model.TokenAccount) ([]byte, error) {
+		jwt, _, terr := s.cf.ExchangeToken(ctx, token.Value)
+		if terr != nil {
+			s.markTokenDead(ctx, "creativefabrica", token, "video")
+			return nil, terr
+		}
+		bytes, url, gerr := s.cf.GenerateVideo(ctx, token.Value, jwt, modelItem.ID, in.Prompt, aspectRatio, refs, downloadResult)
+		if gerr == nil {
+			videoURL = url
+			// One-shot: the account's coins paid for exactly this generation.
+			s.markTokenDead(ctx, "creativefabrica", token, "video")
+		}
+		return bytes, gerr
+	}, creativefabricaErrClass, nil, true)
 	return data, videoURL, err
 }
 
@@ -3712,9 +3806,9 @@ func resolveAdobeVideoEngine(modelID string) (string, string) {
 		return "veo31-fast", ""
 	case "gemini-veo3.1":
 		return "veo31-standard", ""
-	case "seedance-2.0-fast":
+	case "adobe-seedance-2.0-fast":
 		return "seedance-2.0-fast", ""
-	case "seedance-2.0":
+	case "adobe-seedance-2.0":
 		return "seedance-2.0", ""
 	case "firefly-ray":
 		return "luma", ""
@@ -3779,7 +3873,7 @@ func (s *V1Service) markTokenFailure(ctx context.Context, pool string, token mod
 		// grok is intentionally excluded: a grok sso can momentarily 401 while
 		// still valid (upstream blip / proxy / anti-bot), so an auth failure just
 		// fails over for this request without permanently killing the account.
-		disable := pool == "chatgpt" || pool == "runway" || pool == "leonardo" || pool == "krea" || pool == "imagine"
+		disable := pool == "chatgpt" || pool == "runway" || pool == "leonardo" || pool == "krea" || pool == "imagine" || pool == "creativefabrica"
 		if disable && pool == "leonardo" {
 			// 两道保险：先重新 get-session 复核（单次失败常是 bearer 轮换竞态），复核
 			// 也不过就只记一次连续失败，连续到上限才判死。
@@ -3915,7 +4009,7 @@ func (s *V1Service) rotateRoundRobin(pool string, items []model.TokenAccount) {
 const freeOnly1KModelID = "nano-banana-2"
 
 func isSeedanceModel(modelID string) bool {
-	return modelID == "seedance-2.0-fast" || modelID == "seedance-2.0"
+	return modelID == "adobe-seedance-2.0-fast" || modelID == "adobe-seedance-2.0"
 }
 
 // freeAccountsAllowed reports whether 普号(free) may serve this request: the model

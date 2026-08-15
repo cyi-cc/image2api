@@ -135,7 +135,9 @@ const maxAudiosRaw = computed(() => {
   const n = familyPreset.value?.max_audios
   return n === undefined || n === null ? null : Number(n)
 })
-const isSeedanceModel = computed(() => /^seedance/.test(model.value?.id || ''))
+// creativefabrica 上游只收图片参考,没有首尾帧/视频/音频,虽叫 seedance 也要排除。
+const isSeedanceModel = computed(() =>
+  /^seedance/.test(model.value?.id || '') && (model.value?.provider || '') !== 'creativefabrica')
 // 支持图片以外的参考资产（视频/音频）的模型：seedance 系 + 预设声明了音视频上限的
 const supportsMediaRefs = computed(() =>
   isSeedanceModel.value || maxVideosRaw.value > 0 || maxAudiosRaw.value > 0)

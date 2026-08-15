@@ -439,7 +439,7 @@ func (h *UserGenerationHandler) VideoPresets(c *gin.Context) {
 				"resolutions":          []string{"720p", "1080p"},
 			},
 			{
-				"key":                  "seedance-2.0-fast",
+				"key":                  "adobe-seedance-2.0-fast",
 				"label":                "Seedance 2.0 Fast",
 				"type":                 "video",
 				"provider":             "adobe",
@@ -450,7 +450,7 @@ func (h *UserGenerationHandler) VideoPresets(c *gin.Context) {
 				"reference_mode":       "style",
 			},
 			{
-				"key":                  "seedance-2.0",
+				"key":                  "adobe-seedance-2.0",
 				"label":                "Seedance 2.0",
 				"type":                 "video",
 				"provider":             "adobe",
@@ -459,6 +459,36 @@ func (h *UserGenerationHandler) VideoPresets(c *gin.Context) {
 				"resolutions":          []string{"720p", "1080p"},
 				"max_reference_images": 9,
 				"reference_mode":       "style",
+			},
+			{
+				"key":                  "seedance-2.0-fast",
+				"label":                "Seedance 2.0 Fast (Creative Fabrica)",
+				"type":                 "video",
+				"provider":             "creativefabrica",
+				"durations":            []string{"14s"},
+				"ratios":               []string{"16:9", "9:16"},
+				"resolutions":          []string{"720p"},
+				// Creative Fabrica 上游只有普通参考图(VIDEO_FRAME_TYPE_REFERENCE),
+				// 没有首尾帧,也不收视频/音频参考。
+				"max_reference_images": 9,
+				"reference_mode":       "asset",
+				"max_videos":           0,
+				"max_audios":           0,
+			},
+			{
+				"key":                  "seedance-2.0",
+				"label":                "Seedance 2.0 (Creative Fabrica)",
+				"type":                 "video",
+				"provider":             "creativefabrica",
+				"durations":            []string{"10s"},
+				"ratios":               []string{"16:9", "9:16"},
+				"resolutions":          []string{"720p"},
+				// Creative Fabrica 上游只有普通参考图(VIDEO_FRAME_TYPE_REFERENCE),
+				// 没有首尾帧,也不收视频/音频参考。
+				"max_reference_images": 9,
+				"reference_mode":       "asset",
+				"max_videos":           0,
+				"max_audios":           0,
 			},
 			{
 				"key":                  "seedance-2.0-不卡人脸",
@@ -675,7 +705,7 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"description":          "Adobe Firefly Video",
 		},
 		{
-			"id":                   "seedance-2.0-fast",
+			"id":                   "adobe-seedance-2.0-fast",
 			"provider":             "adobe",
 			"type":                 "video",
 			"ratios":               []string{"16:9", "9:16"},
@@ -687,7 +717,7 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"description":          "Seedance 2.0 Fast",
 		},
 		{
-			"id":                   "seedance-2.0",
+			"id":                   "adobe-seedance-2.0",
 			"provider":             "adobe",
 			"type":                 "video",
 			"ratios":               []string{"16:9", "9:16"},
@@ -697,6 +727,32 @@ func (h *UserGenerationHandler) catalogEntries(c *gin.Context) ([]gin.H, error) 
 			"max_reference_images": 9,
 			"reference_mode":       "style",
 			"description":          "Seedance 2.0",
+		},
+		{
+			"id":                   "seedance-2.0-fast",
+			"provider":             "creativefabrica",
+			"type":                 "video",
+			"ratios":               []string{"16:9", "9:16"},
+			"resolutions":          []string{"720p"},
+			// 一次性账号：积分刚好够一次生成，时长固定 14 秒。
+			"durations":            []string{"14s"},
+			// Creative Fabrica 上游只有普通参考图,没有首尾帧,也不收视频/音频参考。
+			"max_reference_images": 9,
+			"reference_mode":       "asset",
+			"description":          "Seedance 2.0 Fast (Creative Fabrica)",
+		},
+		{
+			"id":                   "seedance-2.0",
+			"provider":             "creativefabrica",
+			"type":                 "video",
+			"ratios":               []string{"16:9", "9:16"},
+			"resolutions":          []string{"720p"},
+			// 一次性账号：积分刚好够一次生成，时长固定 10 秒。
+			"durations":            []string{"10s"},
+			// Creative Fabrica 上游只有普通参考图,没有首尾帧,也不收视频/音频参考。
+			"max_reference_images": 9,
+			"reference_mode":       "asset",
+			"description":          "Seedance 2.0 (Creative Fabrica)",
 		},
 		{
 			"id":                   "runway-gen4-turbo",
@@ -932,7 +988,7 @@ func (h *UserGenerationHandler) publicModels() ([]gin.H, error) {
 			"stub":        false,
 		},
 		{
-			"id":          "seedance-2.0-fast",
+			"id":          "adobe-seedance-2.0-fast",
 			"provider":    "adobe",
 			"kind":        "video",
 			"ratios":      []string{"16:9", "9:16"},
@@ -941,12 +997,30 @@ func (h *UserGenerationHandler) publicModels() ([]gin.H, error) {
 			"stub":        false,
 		},
 		{
-			"id":          "seedance-2.0",
+			"id":          "adobe-seedance-2.0",
 			"provider":    "adobe",
 			"kind":        "video",
 			"ratios":      []string{"16:9", "9:16"},
 			"resolutions": []string{"720p", "1080p"},
 			"description": "Seedance 2.0",
+			"stub":        false,
+		},
+		{
+			"id":          "seedance-2.0-fast",
+			"provider":    "creativefabrica",
+			"kind":        "video",
+			"ratios":      []string{"16:9", "9:16"},
+			"resolutions": []string{"720p"},
+			"description": "Seedance 2.0 Fast (Creative Fabrica)",
+			"stub":        false,
+		},
+		{
+			"id":          "seedance-2.0",
+			"provider":    "creativefabrica",
+			"kind":        "video",
+			"ratios":      []string{"16:9", "9:16"},
+			"resolutions": []string{"720p"},
+			"description": "Seedance 2.0 (Creative Fabrica)",
 			"stub":        false,
 		},
 		{

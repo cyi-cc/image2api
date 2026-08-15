@@ -55,7 +55,7 @@ const stats = ref({
   total: 0, dead_total: 0,
   openai: { ...EMPTY_TYPE }, adobe: { ...EMPTY_TYPE }, runway: { ...EMPTY_TYPE },
   leonardo: { ...EMPTY_TYPE }, krea: { ...EMPTY_TYPE }, imagine: { ...EMPTY_TYPE },
-  grok: { ...EMPTY_TYPE },
+  grok: { ...EMPTY_TYPE }, creativefabrica: { ...EMPTY_TYPE },
 })
 
 // 异常账号 = 已失效(401)被锁定的号(红色锁定行)。用于「一键删除异常账号」。
@@ -69,6 +69,7 @@ function typePill(t) {
     leonardo: 'bg-amber-500/10 text-amber-300 ring-amber-400/30',
     krea: 'bg-sky-500/10 text-sky-300 ring-sky-400/30',
     imagine: 'bg-teal-500/10 text-teal-300 ring-teal-400/30',
+    creativefabrica: 'bg-fuchsia-500/10 text-fuchsia-300 ring-fuchsia-400/30',
   }[t] || 'bg-white/[0.06] text-white/70 ring-white/15'
 }
 // 与后端 accountConcurrency 保持一致：adobe 普号固定 1 并发，会员号取配置值
@@ -338,7 +339,7 @@ onMounted(() => { loadAccounts(); loadModelList() })
         <div class="text-2xl font-semibold mt-1 tabular-nums">{{ stats.total }}</div>
         <div class="text-[10px] text-white/35 mt-0.5">成功/失败/限额</div>
       </div>
-      <div v-for="t in [['openai','OpenAI','text-emerald-300/80'],['adobe','Adobe','text-rose-300/80'],['runway','Runway','text-violet-300/80'],['leonardo','Leonardo','text-amber-300/80'],['krea','Krea','text-sky-300/80'],['imagine','Imagine','text-teal-300/80'],['grok','Grok','text-slate-300/80']]"
+      <div v-for="t in [['openai','OpenAI','text-emerald-300/80'],['adobe','Adobe','text-rose-300/80'],['runway','Runway','text-violet-300/80'],['leonardo','Leonardo','text-amber-300/80'],['krea','Krea','text-sky-300/80'],['imagine','Imagine','text-teal-300/80'],['grok','Grok','text-slate-300/80'],['creativefabrica','Creative Fabrica','text-fuchsia-300/80']]"
            :key="t[0]" class="card p-4">
         <div class="text-[11px] uppercase tracking-wider" :class="t[2]">{{ t[1] }}</div>
         <div class="text-2xl font-semibold mt-1 tabular-nums">
@@ -372,6 +373,9 @@ onMounted(() => { loadAccounts(); loadModelList() })
         </button>
         <button @click="setFilter(() => typeFilter = 'grok')" class="fp" :class="typeFilter === 'grok' && 'fp-on'">
           <span class="w-1.5 h-1.5 rounded-full bg-slate-400"></span>Grok
+        </button>
+        <button @click="setFilter(() => typeFilter = 'creativefabrica')" class="fp" :class="typeFilter === 'creativefabrica' && 'fp-on'">
+          <span class="w-1.5 h-1.5 rounded-full bg-fuchsia-400"></span>Creative Fabrica
         </button>
       </div>
       <div class="w-px h-5 bg-white/10"></div>
@@ -507,7 +511,7 @@ onMounted(() => { loadAccounts(); loadModelList() })
                 <span class="text-white/20">/</span>
                 <span :class="a.video_remaining > 0 ? 'text-emerald-300' : 'text-rose-300'">{{ a.video_remaining }}</span>
               </span>
-              <span v-else-if="(a.type === 'openai' || a.type === 'adobe' || a.type === 'runway' || a.type === 'leonardo' || a.type === 'krea' || a.type === 'imagine') && a.remaining != null && a.remaining !== -1"
+              <span v-else-if="(a.type === 'openai' || a.type === 'adobe' || a.type === 'runway' || a.type === 'leonardo' || a.type === 'krea' || a.type === 'imagine' || a.type === 'creativefabrica') && a.remaining != null && a.remaining !== -1"
                     class="font-mono font-semibold"
                     :class="a.remaining > 0 ? 'text-emerald-300' : 'text-rose-300'">{{ a.remaining }}</span>
               <span v-else class="text-white/25" :title="a._quotaError || ''">—</span>

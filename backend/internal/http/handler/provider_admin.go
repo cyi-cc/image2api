@@ -279,6 +279,38 @@ func (h *ProviderAdminHandler) ImportAdobeCookie(c *gin.Context) {
 	})
 }
 
+func (h *ProviderAdminHandler) ImportCreativeFabricaCookie(c *gin.Context) {
+	var body struct {
+		Cookie string `json:"cookie"`
+		Value  string `json:"value"`
+		Name   string `json:"name"`
+		ID     string `json:"id"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": "invalid request body"})
+		return
+	}
+	cookie := body.Cookie
+	if cookie == "" {
+		cookie = body.Value
+	}
+	name := body.Name
+	if name == "" {
+		name = body.ID
+	}
+	item, err := h.tokens.ImportCreativeFabricaCookie(c.Request.Context(), cookie, name)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"detail": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"ok":      true,
+		"id":      item.ID,
+		"status":  item.Status,
+		"pending": item.Status == "pending",
+	})
+}
+
 func (h *ProviderAdminHandler) TokenUpdate(c *gin.Context) {
 	var body map[string]any
 	if err := c.ShouldBindJSON(&body); err != nil {
@@ -392,7 +424,7 @@ func (h *ProviderAdminHandler) AccountsList(c *gin.Context) {
 // accountsStats reproduces the 账号 KPI strip: per-type 正常/失效/限额 counts plus a
 // grand total and total dead count (drives 「删除异常账号 (N)」).
 func accountsStats(rows []map[string]any) gin.H {
-	types := []string{"openai", "adobe", "runway", "leonardo", "krea", "imagine", "grok"}
+	types := []string{"openai", "adobe", "runway", "leonardo", "krea", "imagine", "grok", "creativefabrica"}
 	by := map[string]*struct{ N, Ok, Dead, Quota int }{}
 	for _, t := range types {
 		by[t] = &struct{ N, Ok, Dead, Quota int }{}

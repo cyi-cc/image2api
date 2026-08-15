@@ -1,0 +1,115 @@
+# image2api — production stack on the new server.
+# PostgreSQL + Redis + RustFS (S3) + backend + frontend/nginx (HTTP on port 80).
+# TLS is handled externally (CDN/reverse proxy); this stack is plain HTTP.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# To migrate data in:
+#   1. PostgreSQL: pg_restore into the postgres container.
+#   2. RustFS: mc mirror from the old bucket to http://<new-host>:9000/vivid
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: vivid_ai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-vividai_postgres_2026}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d vivid_ai"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    environment:
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-vividai}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-vividai_secret_2026}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_VOLUMES: /data
+    volumes:
+      - rustfsdata:/data
+    ports:
+      # Exposed temporarily for the one-time migration from the old server.
+      # After migration you may remove this mapping and firewall :9000.
+      - "9000:9000"
+    restart: unless-stopped
+
+  createbucket:
+    image: minio/mc:latest
+    depends_on:
+      - rustfs
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set s3 http://rustfs:9000 ${RUSTFS_ACCESS_KEY:-vividai} ${RUSTFS_SECRET_KEY:-vividai_secret_2026}; do
+        echo 'waiting for rustfs...'; sleep 2;
+      done;
+      mc mb -p s3/vivid || true;
+      echo 'bucket ready';
+      "
+    restart: "no"
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      APP_ENV: production
+      APP_TITLE: ${APP_TITLE:-Vivid AI}
+      HTTP_ADDR: 0.0.0.0:6666
+      POSTGRES_DSN: host=postgres user=postgres password=${POSTGRES_PASSWORD:-vividai_postgres_2026} dbname=vivid_ai port=5432 sslmode=disable TimeZone=Asia/Shanghai
+      REDIS_ADDR: redis:6379
+      REDIS_PASSWORD: ""
+      REDIS_DB: "0"
+      RUSTFS_ENDPOINT: http://rustfs:9000
+      RUSTFS_BUCKET: vivid
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-vividai}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-vividai_secret_2026}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://vividai.run,http://www.vividai.run,http://206.168.190.183}
+      COOKIE_SECURE: "false"
+    volumes:
+      - generated:/app/data/generated
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      createbucket:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:6666/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  rustfsdata:
+  generated:

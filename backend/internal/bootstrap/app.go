@@ -15,6 +15,7 @@ import (
 	"backend/internal/provider/adobe"
 	"backend/internal/provider/chatgpt"
 	"backend/internal/provider/custom"
+	"backend/internal/provider/creativefabrica"
 	"backend/internal/provider/grok"
 	"backend/internal/provider/imagine"
 	"backend/internal/provider/krea"
@@ -129,14 +130,15 @@ func NewApp(ctx context.Context) (*App, error) {
 	// (a reship made the recipe stale). No polling.
 	startGrokStatsigRefresh(siteRepo)
 	customClient := custom.NewClient()
-	v1Svc := service.NewV1Service(cfg, modelRepo, userRepo, eventRepo, tokenRepo, siteRepo, cgroupRepo, concSvc, adobeClient, chatGPTClient, runwayClient, leonardoClient, kreaClient, imagineClient, grokClient, customClient, rustfsClient)
+	cfClient := creativefabrica.NewClient("")
+	v1Svc := service.NewV1Service(cfg, modelRepo, userRepo, eventRepo, tokenRepo, siteRepo, cgroupRepo, concSvc, adobeClient, chatGPTClient, runwayClient, leonardoClient, kreaClient, imagineClient, grokClient, customClient, cfClient, rustfsClient)
 	siteSvc := service.NewSiteService(siteRepo, cfg.AppTitle)
 	showcaseSvc := service.NewShowcaseService(showcaseRepo)
 	adminReadSvc := service.NewAdminReadService(cfg, userRepo, modelRepo, eventRepo, siteRepo, tokenRepo, cdkRepo, rustfsClient, showcaseRepo)
 	adminWriteSvc := service.NewAdminWriteService(userRepo, showcaseRepo, modelRepo, eventRepo, apiKeyRepo, tokenRepo, orderRepo)
 	cdkSvc := service.NewCDKService(cdkRepo, userRepo, siteRepo, orderRepo)
 	apiKeySvc := service.NewAPIKeyService(apiKeyRepo)
-	tokenSvc := service.NewTokenService(tokenRepo, refreshRepo, eventRepo, siteRepo, adobeClient, chatGPTClient, runwayClient, leonardoClient, kreaClient, imagineClient, grokClient)
+	tokenSvc := service.NewTokenService(tokenRepo, refreshRepo, eventRepo, siteRepo, adobeClient, chatGPTClient, runwayClient, leonardoClient, kreaClient, imagineClient, grokClient, cfClient)
 	refreshSvc := service.NewRefreshProfileService(refreshRepo, tokenRepo, adobeClient)
 	// Enable refresh-then-retry on a mid-request Adobe 401 (re-mint access token
 	// from the cookie). Wired post-construction to avoid a ctor init cycle.

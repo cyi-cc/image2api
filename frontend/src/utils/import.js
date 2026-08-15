@@ -49,6 +49,13 @@ export function looksLikeKreaCookie(s) {
   return /sb-superb-auth-token/.test(s || '')
 }
 
+// Creative Fabrica session cookies carry the cfauth_* family (cfauth_uid /
+// cfauth_sig / cfauth_utp) plus the WordPress SSO cookie — those markers tell
+// them apart from an Adobe/Krea/Leonardo cookie (all otherwise opaque strings).
+export function looksLikeCreativeFabricaCookie(s) {
+  return /cfauth_/.test(s || '') || /cfAmpAnonymousId/.test(s || '') || /wordpress_logged_in_/.test(s || '')
+}
+
 // An Imagine.art credential is a JSON object { token, refreshToken } (both JWTs).
 function isImagineObj(o) {
   return !!o && typeof o === 'object' &&
@@ -67,6 +74,7 @@ function cookieType(v) {
   if (looksLikeImagineToken(v)) return 'imagine'
   if (looksLikeKreaCookie(v)) return 'krea'
   if (looksLikeLeonardoCookie(v)) return 'leonardo'
+  if (looksLikeCreativeFabricaCookie(v)) return 'creativefabrica'
   return 'adobe'
 }
 

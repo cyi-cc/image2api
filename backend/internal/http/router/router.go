@@ -129,6 +129,7 @@ func New(cfg *config.Config, auth *service.AuthService, handlers Handlers) *gin.
 		authed.POST("/tokens", handlers.ProviderAdmin.TokensCreate)
 		authed.POST("/tokens/import-chatgpt-token", handlers.ProviderAdmin.ImportChatGPTToken)
 		authed.POST("/tokens/import-adobe-cookie", handlers.ProviderAdmin.ImportAdobeCookie)
+		authed.POST("/tokens/import-creativefabrica-cookie", handlers.ProviderAdmin.ImportCreativeFabricaCookie)
 		authed.POST("/tokens/import-runway-token", handlers.ProviderAdmin.ImportRunwayToken)
 		authed.POST("/tokens/import-leonardo-cookie", handlers.ProviderAdmin.ImportLeonardoCookie)
 		authed.POST("/tokens/import-krea-cookie", handlers.ProviderAdmin.ImportKreaCookie)
